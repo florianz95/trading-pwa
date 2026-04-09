@@ -9,7 +9,7 @@ const client = new OpenAI({
   },
 });
 
-const MODEL = process.env.LLM_MODEL ?? 'anthropic/claude-haiku-4.5';
+const MODEL = process.env.LLM_MODEL ?? 'anthropic/claude-3.5-haiku';
 
 interface AnalysisInput {
   portfolio: { ticker: string; buyPrice: number; quantity: number; currentPrice: number }[];
@@ -86,7 +86,7 @@ export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
  
   const response = await client.chat.completions.create({
     model: MODEL,
-    max_tokens: 1024,
+    max_tokens: 2048,
     temperature: 0.3,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
