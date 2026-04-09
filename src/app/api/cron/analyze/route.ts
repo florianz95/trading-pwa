@@ -4,7 +4,7 @@ import { getQuote, getHistorical } from '@/lib/yahoo';
 import { analyzeMarket } from '@/lib/openrouter';
 import { fetchAllNews } from '@/lib/rss';
 import { sendPushNotification } from '@/lib/push';
-import { WATCHLIST_TICKERS, STOCKS } from '@/lib/stocks';
+import { WATCHLIST_TICKERS, sampleWatchlist } from '@/lib/stocks';
 
 export const maxDuration = 60;
 
@@ -35,8 +35,8 @@ export async function GET(req: NextRequest) {
         ? [...new Set(positions.map((p: any) => p.ticker))]
         : [];
 
-      // Merge portfolio tickers + watchlist (deduplicated)
-      const tickers = [...new Set([...positionTickers, ...WATCHLIST_TICKERS])];
+      // Merge portfolio tickers + 15 zufällige Watchlist-Tickers (dedupliziert)
+      const tickers = [...new Set([...positionTickers, ...sampleWatchlist(15)])];
 
       // 1. Live-Kurse + History
       const quotes = await Promise.all(tickers.map(getQuote));

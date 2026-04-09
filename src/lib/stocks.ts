@@ -109,10 +109,30 @@ export const STOCKS: Stock[] = [
 
 // Watchlist für den Cron-Bot (Top-Picks für Kaufgelegenheiten)
 export const WATCHLIST_TICKERS = [
-  'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META',
-  'SAP.DE', 'RHM.DE',
-  'PLTR', 'BTC-USD', 'ETH-USD',
+  // US Mega-Cap
+  'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AVGO',
+  // US Tech/Growth
+  'AMD', 'ORCL', 'CRM', 'ADBE', 'QCOM', 'MU', 'INTC', 'ARM',
+  'PLTR', 'CRWD', 'NET', 'DDOG', 'SNOW', 'SHOP', 'COIN', 'SMCI',
+  // US Finance/Consumer
+  'JPM', 'BAC', 'GS', 'V', 'MA', 'WMT', 'COST', 'NKE', 'MCD',
+  // US Energy/Health
+  'XOM', 'CVX', 'JNJ', 'UNH', 'PFE',
+  // DE/EU Aktien
+  'SAP.DE', 'SIE.DE', 'RHM.DE', 'ALV.DE', 'IFX.DE', 'AIR.DE',
+  'BMW.DE', 'MBG.DE', 'DTE.DE', 'BAS.DE', 'BAYN.DE', 'ADS.DE',
+  'ENR.DE', 'MTX.DE', 'MUV2.DE', 'P911.DE', 'DBK.DE', 'ZAL.DE',
+  // ETFs
+  'SPY', 'QQQ', 'VWCE.DE', 'EUNL.DE',
+  // Krypto
+  'BTC-USD', 'ETH-USD', 'SOL-USD',
 ];
+
+// Pro Cron-Lauf: 15 zufällige aus der Watchlist auswählen
+export function sampleWatchlist(n = 15): string[] {
+  const shuffled = [...WATCHLIST_TICKERS].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, n);
+}
 
 export function searchStocks(query: string): Stock[] {
   const q = query.toLowerCase();

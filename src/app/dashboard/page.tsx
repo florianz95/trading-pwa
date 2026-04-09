@@ -147,6 +147,11 @@ function DashboardContent() {
     setPendingSignals((prev) => prev.filter((s) => s.id !== signalId));
   };
 
+  const handleDeleteSignal = async (signalId: string) => {
+    await supabase.from('signals').delete().eq('id', signalId);
+    setSignals((prev) => prev.filter((s) => s.id !== signalId));
+  };
+
   const handleLogin = async () => {
     setAuthLoading(true);
     setAuthError('');
@@ -318,13 +323,15 @@ function DashboardContent() {
       )}
 
       <div className="mb-6">
-        <h2 className="text-sm font-medium text-gray-400 mb-3">Letzte Signale</h2>
+        <h2 className="text-sm font-medium text-gray-400 mb-3">
+          Letzte Signale <span className="text-gray-600">({signals.length})</span>
+        </h2>
         {signals.length === 0 ? (
           <p className="text-sm text-gray-600">Noch keine Signale. Der Bot analysiert 3× täglich.</p>
         ) : (
-          <div className="space-y-2">
-            {signals.slice(0, 5).map((s) => (
-              <SignalCard key={s.id} signal={s} />
+          <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
+            {signals.map((s) => (
+              <SignalCard key={s.id} signal={s} onDelete={handleDeleteSignal} />
             ))}
           </div>
         )}
