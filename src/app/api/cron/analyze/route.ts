@@ -126,25 +126,15 @@ export async function GET(req: NextRequest) {
       const recentBuyTickers3d = new Set((recentBuys3d ?? []).map((s: any) => s.ticker));
 
       // ── Hard Stop-Loss / Take-Profit (Code, nicht KI) ────────────────────
-      // Positionen die -8% oder +15% erreicht haben → sofort Signal erzwingen
+      // Langfristig: Stop-Loss -15%, Take-Profit +50%
       const forcedSignals: { ticker: string; action: 'sell'; reason: string }[] = [];
       for (const p of positions ?? []) {
         const currentPrice = quotes.find((q) => q.ticker === p.ticker)?.price ?? p.buy_price;
         const pnlPct = ((currentPrice - p.buy_price) / p.buy_price) * 100;
-        if (pnlPct <= -8) {
-          forcedSignals.push({ ticker: p.ticker, action: 'sell', reason: `Stop-Loss: ${pnlPct.toFixed(1)}% unter Einstieg (${p.buy_price.toFixed(2)}€ → ${currentPrice.toFixed(2)}€)` });
-        } else if (pnlPct >= 15) {
-          forcedSignals.push({ ticker: p.ticker, action: 'sell', reason: `Take-Profit: +${pnlPct.toFixed(1)}% über Einstieg (${p.buy_price.toFixed(2)}€ → ${currentPrice.toFixed(2)}€)` });
-        }
-      }
-
-      // ── Grüner-Tag-Filter für Mean-Reversion-Kandidaten ─────────────────
-      // Kaufe nur wenn letzter Tag positiv geschlossen hat
-      const greenDayTickers = new Set<string>();
-      for (const hist of histories) {
-        const p = hist.prices;
-        if (p.length >= 2 && p[p.length - 1] > p[p.length - 2]) {
-          greenDayTickers.add(hist.ticker);
+        if (pnlPct <= -15) {
+          forcedSignals.push({ ticker: p.ticker, action: 'sell', reason: `Stop-Loss: ${pnlPct.toFixed(1)}% unter Einstieg (${p.buy_price.toFixed(2)}€ → ${currentPrice.toFixed(2)}€). These hat sich nicht bewahrheitet, Verluste begrenzen.` });
+        } else if (pnlPct >= 50) {
+          forcedSignals.push({ ticker: p.ticker, action: 'sell', reason: `Gewinnmitnahme: +${pnlPct.toFixed(1)}% über Einstieg (${p.buy_price.toFixed(2)}€ → ${currentPrice.toFixed(2)}€). Ziel erreicht, Gewinne sichern.` });
         }
       }
 
@@ -154,11 +144,11 @@ export async function GET(req: NextRequest) {
         buyPrice: p.buy_price,
         quantity: p.quantity,
         currentPrice: quotes.find((q) => q.ticker === p.ticker)?.price ?? 0,
+        buyDate: p.buy_date,
       }));
       const watchlistCandidates = topWatchlist
-        .filter((t) => !cooldownTickers.has(t))           // Cooldown
-        .filter((t) => (buyCounts30d[t] ?? 0) < 2)        // Max 2/30d
-        .filter((t) => greenDayTickers.has(t) || regime === 'RISK_ON') // Grüner Tag (außer RISK_ON)
+        .filter((t) => !cooldownTickers.has(t))    // Cooldown
+        .filter((t) => (buyCounts30d[t] ?? 0) < 2) // Max 2/30d
         .map((t) => {
           const price = quotes.find((q) => q.ticker === t)?.price ?? 0;
           return { ticker: t, buyPrice: price, quantity: 0, currentPrice: price };
@@ -185,11 +175,10 @@ export async function GET(req: NextRequest) {
 
       for (const sig of allSignals) {
         if (sig.action === 'buy') {
-          if (regime === 'RISK_OFF') continue;                          // Kein Kauf bei RISK_OFF
-          if (cooldownTickers.has(sig.ticker)) continue;                // Cooldown
-          if ((buyCounts30d[sig.ticker] ?? 0) >= 2) continue;          // Max 2/30d
-          if (newPositionsThisWeek >= 5) continue;                      // Max 5 neue/Woche
-          if (!greenDayTickers.has(sig.ticker) && regime !== 'RISK_ON') continue; // Kein fallende Messer
+          if (regime === 'RISK_OFF') continue;                // Kein Kauf bei RISK_OFF
+          if (cooldownTickers.has(sig.ticker)) continue;      // Cooldown
+          if ((buyCounts30d[sig.ticker] ?? 0) >= 2) continue; // Max 2/30d
+          if (newPositionsThisWeek >= 5) continue;             // Max 5 neue/Woche
         }
         if (sig.action === 'sell') {
           if (recentBuyTickers3d.has(sig.ticker) && sig.confidence < 0.90) continue; // Mindesthaltedauer (außer Hard Stop)
@@ -212,22 +201,31 @@ export async function GET(req: NextRequest) {
       const pushResults: any[] = [];
       if (user.push_subscription) {
         const buySignals = savedSignals.filter((s) => s.action === 'buy' && s.confidence > 0.60);
-        for (const sig of buySignals.slice(0, 3)) {
+        for (const sig of buySignals.slice(0, 2)) {
           const ok = await sendPushNotification(user.push_subscription, {
-            title: `KAUFEN: ${sig.ticker}`,
+            title: `Kaufempfehlung: ${sig.ticker}`,
             body: sig.reasoning.slice(0, 120),
             ticker: sig.ticker, signal: 'buy', signal_id: sig.id, url: '/dashboard',
           });
           pushResults.push({ ticker: sig.ticker, type: 'buy', sent: ok });
         }
         const sellSignals = savedSignals.filter((s) => s.action === 'sell');
-        for (const sig of sellSignals.slice(0, 3)) {
+        for (const sig of sellSignals.slice(0, 2)) {
           const ok = await sendPushNotification(user.push_subscription, {
-            title: sig.confidence >= 0.90 ? `⛔ STOP-LOSS: ${sig.ticker}` : `VERKAUFEN: ${sig.ticker}`,
+            title: sig.confidence >= 0.90 ? `Stop-Loss erreicht: ${sig.ticker}` : `Verkaufsempfehlung: ${sig.ticker}`,
             body: sig.reasoning.slice(0, 120),
             ticker: sig.ticker, signal: 'sell', signal_id: sig.id, url: '/dashboard',
           });
           pushResults.push({ ticker: sig.ticker, type: 'sell', sent: ok });
+        }
+        const holdSignals = savedSignals.filter((s) => s.action === 'hold');
+        if (holdSignals.length > 0 && buySignals.length === 0 && sellSignals.length === 0) {
+          const ok = await sendPushNotification(user.push_subscription, {
+            title: `Tagesupdate: ${holdSignals.length} Position${holdSignals.length > 1 ? 'en' : ''} im Blick`,
+            body: holdSignals.map((s) => s.ticker).join(', ') + ' — weiter halten.',
+            ticker: holdSignals[0].ticker, signal: 'hold', signal_id: holdSignals[0].id, url: '/dashboard',
+          });
+          pushResults.push({ type: 'hold_summary', sent: ok });
         }
       }
 
@@ -237,7 +235,7 @@ export async function GET(req: NextRequest) {
         positions: (positions ?? []).length,
         tickers,
         forcedSignals: forcedSignals.map((s) => s.ticker + ':' + s.reason.split(':')[0]),
-        filteredOut: { cooldown: [...cooldownTickers], greenDayMissing: topWatchlist.filter((t) => !greenDayTickers.has(t)).length },
+        filteredOut: { cooldown: [...cooldownTickers] },
         signals: savedSignals.map((s) => ({ ticker: s.ticker, action: s.action, confidence: s.confidence })),
         hasPushSub: !!user.push_subscription,
         push: pushResults,

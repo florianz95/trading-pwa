@@ -17,7 +17,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "backtest": "node scripts/backtest.mjs"
+    "backtest": "npx tsx scripts/backtest.ts",
+    "backtest:ai": "npx tsx scripts/backtest-ai.ts",
+    "backtest-v2": "npx tsx scripts/backtest-v2.ts",
+    "backtest-v3": "npx tsx scripts/backtest-v3.ts",
+    "backtest-events": "npx tsx scripts/backtest-events.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -26,6 +30,7 @@
     "autoprefixer": "^10.4.0",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.0"
   }
 }

@@ -6,9 +6,10 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: signalId } = await params;
-  const { userId, amount } = await req.json();
+  const body = await req.json();
+  const { userId, amount } = body;
 
-  if (!userId || !signalId || !amount || amount <= 0) {
+  if (!userId || !signalId) {
     return NextResponse.json({ error: 'Missing data' }, { status: 400 });
   }
 
@@ -18,7 +19,6 @@ export async function POST(
     .select('*')
     .eq('id', signalId)
     .eq('user_id', userId)
-    .eq('signal_type', 'buy')
     .single();
 
   if (sigErr || !signal) {
@@ -29,39 +29,53 @@ export async function POST(
     return NextResponse.json({ error: 'Signal already processed' }, { status: 409 });
   }
 
-  const buyPrice = signal.current_price;
-  const quantity = amount / buyPrice;
-  const today = new Date().toISOString().split('T')[0];
+  // ── BUY: create position ─────────────────────────────────────────────────
+  if (signal.signal_type === 'buy') {
+    if (!amount || amount <= 0) {
+      return NextResponse.json({ error: 'Amount required for buy' }, { status: 400 });
+    }
+    const buyPrice = signal.current_price;
+    const quantity = amount / buyPrice;
+    const today = new Date().toISOString().split('T')[0];
+    const assetType = signal.ticker.includes('-USD')
+      ? 'crypto'
+      : ['GLD', 'SLV', 'FCX', 'NEM', 'XOM', 'CVX'].includes(signal.ticker)
+      ? 'commodity'
+      : 'stock';
 
-  // Determine asset type from ticker
-  const assetType = signal.ticker.includes('-USD')
-    ? 'crypto'
-    : ['GLD', 'SLV', 'FCX', 'NEM', 'XOM', 'CVX'].includes(signal.ticker)
-    ? 'commodity'
-    : 'stock';
+    const { error: posErr } = await supabaseAdmin.from('positions').insert({
+      user_id: userId,
+      ticker: signal.ticker,
+      name: signal.ticker,
+      buy_price: buyPrice,
+      quantity,
+      buy_date: today,
+      order_fee: 0.99,
+      asset_type: assetType,
+      from_signal_id: signalId,
+    });
 
-  // Create position
-  const { error: posErr } = await supabaseAdmin.from('positions').insert({
-    user_id: userId,
-    ticker: signal.ticker,
-    name: signal.ticker,
-    buy_price: buyPrice,
-    quantity,
-    buy_date: today,
-    order_fee: 0.99,
-    asset_type: assetType,
-    from_signal_id: signalId,
-  });
+    if (posErr) {
+      return NextResponse.json({ error: posErr.message }, { status: 500 });
+    }
 
-  if (posErr) {
-    return NextResponse.json({ error: posErr.message }, { status: 500 });
+    await supabaseAdmin.from('signals').update({ status: 'accepted' }).eq('id', signalId);
+    return NextResponse.json({ status: 'accepted', quantity, buyPrice });
   }
 
-  // Mark signal as accepted
-  await supabaseAdmin
-    .from('signals')
-    .update({ status: 'accepted' })
-    .eq('id', signalId);
+  // ── SELL: remove position from portfolio ─────────────────────────────────
+  if (signal.signal_type === 'sell') {
+    await supabaseAdmin
+      .from('positions')
+      .delete()
+      .eq('user_id', userId)
+      .eq('ticker', signal.ticker);
 
-  return NextResponse.json({ status: 'accepted', quantity, buyPrice });
+    await supabaseAdmin.from('signals').update({ status: 'accepted' }).eq('id', signalId);
+    return NextResponse.json({ status: 'accepted', action: 'sold', ticker: signal.ticker });
+  }
+
+  // ── HOLD: acknowledge only, no portfolio change ──────────────────────────
+  await supabaseAdmin.from('signals').update({ status: 'accepted' }).eq('id', signalId);
+  return NextResponse.json({ status: 'accepted', action: 'held', ticker: signal.ticker });
 }
