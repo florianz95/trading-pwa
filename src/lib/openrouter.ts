@@ -9,14 +9,17 @@ const client = new OpenAI({
   },
 });
 
-const MODEL = process.env.LLM_MODEL ?? 'google/gemini-2.0-flash-exp:free';
+const MODEL = process.env.LLM_MODEL ?? 'anthropic/claude-haiku-4.5';
 
 interface AnalysisInput {
   portfolio: { ticker: string; buyPrice: number; quantity: number; currentPrice: number }[];
   news: { title: string; source: string; snippet?: string }[];
   marketData: { ticker: string; prices: number[]; changePct: number }[];
+  regime?: 'RISK_OFF' | 'NORMAL' | 'RISK_ON';
+  spyTrend?: number;
+  vix?: number;
 }
- 
+
 interface Signal {
   ticker: string;
   action: 'buy' | 'sell' | 'hold';
@@ -24,97 +27,80 @@ interface Signal {
   reasoning: string;
   targetPrice?: number;
 }
- 
-const SYSTEM_PROMPT = `Finanzanalyst. Kapitalschutz > Gewinnmaximierung. Antworte NUR als JSON-Array.
- 
-## ANALYSE (alle 3 Schritte durchlaufen)
- 
-### 1. MAKRO & NEWS
-- Geopolitik/Zölle/Sanktionen: Risk-Off oder Risk-On?
-- Zinsen steigend = Tech-Gegenwind. Sinkend = Rückenwind.
-- Sektor-Rotation: Fällt nur Tech oder der ganze Markt?
-- Keine News = NEUTRAL (nicht negativ, nicht positiv).
- 
-### 2. KURS-ANALYSE
-Berechne aus den Kursdaten:
-- Trend: %-Veränderung 5d und 10d.
-- 10d-MA: Kurs darüber = bullish, darunter = bearish.
-- RSI-Proxy: Zähle die Verlusttage der letzten 10 Tage.
-  * 7+ Verlusttage von 10 = ÜBERVERKAUFT → Mean-Reversion wahrscheinlich → BUY-Bias
-  * 7+ Gewinntage von 10 = ÜBERKAUFT → Korrektur wahrscheinlich → SELL-Bias
-  * 4-6 = neutral
-- CRV: Aufwärtspotenzial / Abwärtsrisiko. CRV > 2 = BUY, CRV < 1 = SELL.
- 
-### 3. ENTSCHEIDUNG
- 
-**BUY wenn 2+ zutreffen:**
-- ÜBERVERKAUFT (7+ Verlusttage/10) + Stabilisierung erkennbar (letzter Tag < -0.5% Verlust)
-- Kurs -10%+ unter 10d-Hoch + Fundamentals intakt (kein Unternehmens-Skandal) → Mean-Reversion
-- CRV > 2.0 + Kurs hält Support (Rebound 2+ Tage)
-- Starke positive News + Aufwärtstrend bestätigt
 
-**BUY auch bei nur 1 Bedingung wenn:**
-- Kurs -12%+ unter 10d-Hoch UND Verluste verlangsamen sich (letzter Tag weniger Verlust als vorletzter) → Bodenbildung, Konfidenz max 0.62
- 
-**SELL wenn 2+ zutreffen:**
-- ÜBERKAUFT (7+ Gewinntage/10) + Kurs nahe Resistance
-- Kurs unter 10d-MA + Momentum beschleunigt negativ (-1% → -2% → -3%)
-- Stark negative Unternehmens-News
-- CRV < 0.8 + fallender Trend 5+ Tage
- 
-**HOLD wenn:**
-- Weder BUY noch SELL hat 2+ Bedingungen erfüllt
-- Seitwärts: <1.5% Schwankung in letzten 5 Tagen
- 
-## KRITISCHE REGELN
-- ÜBERVERKAUFT ≠ SELL. Ein Asset das -15% in 10 Tagen gefallen ist, ist ein potentieller MEAN-REVERSION-BUY, nicht ein SELL.
-- Momentum-SELL nur wenn Trend BESCHLEUNIGT (Verluste werden täglich größer). Verlangsamung = mögliche Bodenbildung.
-- Rohstoffe/Minen (Gold, Kupfer, Öl): Höhere Volatilität normal. Erst bei -20%+ als kritisch werten.
-- Krypto: Korreliert mit Nasdaq. Höhere Schwellen: ±25% statt ±10%.
-- Diversifikation: Wenn alle BUY-Signale im selben Sektor → nur stärkstes Signal nehmen.
- 
-## KONFIDENZ
-0.80+: Alle Ebenen einig. 0.65-0.79: Klarer Trend + CRV passt. 0.50-0.64: Gemischt. 0.35-0.49: Schwach.
-Jedes Asset einzeln bewerten. NICHT alle gleiche Konfidenz.
- 
+const SYSTEM_PROMPT = `Du bist ein disziplinierter Finanzanalyst. Kapitalschutz hat absolute Priorität. Antworte NUR als JSON-Array.
+
+## ANALYSE-SCHRITTE
+
+### 1. MARKTREGIME (wird im Prompt vorgegeben)
+- RISK_OFF: Kein Mean-Reversion-Kauf. Nur Defensive oder HOLD.
+- NORMAL: Selektive Käufe nur mit starker Bestätigung.
+- RISK_ON: Käufe möglich, aber diszipliniert.
+
+### 2. KURS-ANALYSE
+Berechne:
+- RSI-Proxy: Verlusttage der letzten 10 Tage
+  * 7+ Verlusttage = ÜBERVERKAUFT
+  * 7+ Gewinntage = ÜBERKAUFT
+- Abstand vom 10d-Hoch und 10d-MA
+- Trendrichtung der letzten 5 Tage
+
+### 3. KAUFENTSCHEIDUNG (alle 3 Bedingungen nötig)
+BUY nur wenn:
+1. TECHNISCH stark: 7+ Verlusttage UND -10%+ unter 10d-Hoch
+2. GRÜNER TAG bestätigt: Letzter Schlusskurs ÜBER Vortag (Rebound begonnen)
+3. KEIN Systemrisiko: Marktregime ist NORMAL oder RISK_ON
+
+Bei RISK_OFF: KEIN BUY, egal wie überverkauft.
+"Überverkauft" allein ist KEIN Kaufsignal in Trending-Märkten.
+
+### 4. VERKAUFSENTSCHEIDUNG
+SELL NUR bei:
+- Stop-Loss: -8% unter Einstiegspreis (quantity > 0)
+- Take-Profit: +15% über Einstiegspreis (quantity > 0)
+- Fundamentales Ereignis: Gewinnwarnung, Skandal, Insolvenz in News
+
+NIEMALS verkaufen weil:
+- "Momentum beschleunigt negativ" (war auch Kaufbegründung)
+- "Überverkauft wiederholt sich" (bestätigt die Mean-Reversion-These)
+- Preis fällt kurz nach Kauf (Halteperiode: min 3 Tage)
+
+### 5. POSITIONSGRÖSSE
+- Kaufkandidaten (quantity=0): BUY nur wenn Überzeugung ≥ 65%
+- Offene Positionen (quantity>0): SELL nur bei Stop/Take-Profit oder Fundamental-Schock
+
 ## FORMAT
-JSON-Array. Kein Markdown. Begründung max. 1 Satz mit den wichtigsten Zahlen. Kein targetPrice wenn nicht sicher.
-[{"ticker":"FCX","action":"buy","confidence":0.72,"reasoning":"8/10 Verlusttage, -14% unter 10d-Hoch, CRV ~2.5."}]`;
- 
+JSON-Array ohne Markdown. Begründung: 1 präziser Satz mit Zahlen.
+[{"ticker":"AAPL","action":"buy","confidence":0.72,"reasoning":"Grüner Tag nach 8/10 Verlusttagen, -12% unter 10d-Hoch, Regime NORMAL."}]`;
+
 export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
   const prompt = buildPrompt(input);
- 
+
   const response = await client.chat.completions.create({
     model: MODEL,
-    max_tokens: 4096,
-    temperature: 0.3,
+    max_tokens: 2048,
+    temperature: 0.2,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: prompt },
     ],
   });
- 
-  const text = response.choices[0]?.message?.content?.trim() ?? '';
 
+  const text = response.choices[0]?.message?.content?.trim() ?? '';
   const clean = text.replace(/```json\s?/g, '').replace(/```/g, '').trim();
+
   try {
     return JSON.parse(clean) as Signal[];
   } catch {
-    // Try to recover truncated JSON by closing at the last complete object
     const lastBrace = clean.lastIndexOf('}');
     if (lastBrace > 0) {
-      try {
-        return JSON.parse(clean.slice(0, lastBrace + 1) + ']') as Signal[];
-      } catch {}
+      try { return JSON.parse(clean.slice(0, lastBrace + 1) + ']') as Signal[]; } catch {}
     }
     return [];
   }
 }
- 
-export async function chatCompletion(
-  systemPrompt: string,
-  userPrompt: string
-): Promise<string> {
+
+export async function chatCompletion(systemPrompt: string, userPrompt: string): Promise<string> {
   const response = await client.chat.completions.create({
     model: MODEL,
     max_tokens: 1500,
@@ -126,65 +112,66 @@ export async function chatCompletion(
   });
   return response.choices[0]?.message?.content?.trim() ?? '';
 }
- 
+
 function buildPrompt(input: AnalysisInput): string {
+  const { regime = 'NORMAL', spyTrend = 0, vix = 20 } = input;
+
+  const regimeBlock = `## MARKTREGIME: ${regime}
+SPY 10d-Trend: ${spyTrend >= 0 ? '+' : ''}${Number(spyTrend).toFixed(1)}% | VIX: ${vix.toFixed(0)}
+${regime === 'RISK_OFF' ? '⚠️  RISK_OFF aktiv → KEIN Mean-Reversion-Kauf erlaubt. Nur HOLD oder SELL.' : ''}
+${regime === 'RISK_ON' ? '✅ RISK_ON aktiv → Selektive Käufe möglich.' : ''}`;
+
   const portfolioStr = input.portfolio
     .map((p) => {
-      const pnl = ((p.currentPrice - p.buyPrice) / p.buyPrice * 100).toFixed(1);
-      return `${p.ticker}: Kauf ${p.buyPrice}€, Aktuell ${p.currentPrice}€ (${Number(pnl) >= 0 ? '+' : ''}${pnl}%), Menge ${p.quantity}`;
+      const pnl = p.buyPrice > 0 ? ((p.currentPrice - p.buyPrice) / p.buyPrice * 100).toFixed(1) : '0.0';
+      const tag = p.quantity > 0 ? `(Portfolio, ${Number(pnl) >= 0 ? '+' : ''}${pnl}% seit Kauf)` : '(Kaufkandidat)';
+      const stopLevel = p.quantity > 0 ? ` | Stop: ${(p.buyPrice * 0.92).toFixed(2)}€ | TP: ${(p.buyPrice * 1.15).toFixed(2)}€` : '';
+      return `${p.ticker} ${tag}: Kurs ${p.currentPrice.toFixed(2)}€${stopLevel}`;
     })
     .join('\n');
- 
+
   const newsStr = input.news
-    .slice(0, 20)
+    .slice(0, 15)
     .map((n) => `[${n.source}] ${n.title}`)
     .join('\n');
- 
+
   const marketStr = input.marketData
     .map((m) => {
       const prices = m.prices;
       const len = prices.length;
       if (len < 2) return `${m.ticker}: ${m.changePct.toFixed(2)}% (zu wenig Daten)`;
- 
-      // Calculate RSI proxy
+
       let lossDays = 0;
       for (let i = Math.max(0, len - 10); i < len; i++) {
         if (i > 0 && prices[i] < prices[i - 1]) lossDays++;
       }
       const last10 = Math.min(10, len - 1);
       const rsiLabel = lossDays >= 7 ? 'ÜBERVERKAUFT' : lossDays <= 3 ? 'ÜBERKAUFT' : 'NEUTRAL';
- 
-      // 10d high
+
       const recent10 = prices.slice(-10);
       const high10d = Math.max(...recent10);
       const distFromHigh = ((prices[len - 1] - high10d) / high10d * 100).toFixed(1);
- 
-      // 10d MA
+
       const ma10 = recent10.reduce((a, b) => a + b, 0) / recent10.length;
       const distFromMA = ((prices[len - 1] - ma10) / ma10 * 100).toFixed(1);
- 
+
+      const greenDay = prices[len - 1] > prices[len - 2] ? '🟢' : '🔴';
       const trend = prices[len - 1] > prices[0] ? '↑' : '↓';
- 
-      return `${m.ticker}: ${m.changePct.toFixed(2)}% ${trend} | ${lossDays}/${last10} Verlusttage (${rsiLabel}) | ${distFromHigh}% unter 10d-Hoch | MA10-Abstand: ${distFromMA}%`;
+
+      return `${m.ticker}: ${m.changePct.toFixed(2)}% ${trend} ${greenDay} | ${lossDays}/${last10} Verlusttage (${rsiLabel}) | ${distFromHigh}% unter 10d-Hoch | MA10: ${distFromMA}%`;
     })
     .join('\n');
- 
-  const hasPortfolio = input.portfolio.some((p) => p.quantity > 0);
 
-  return `Analysiere${hasPortfolio ? ' mein Portfolio und' : ''} folgende Aktien und gib Signale:
+  return `${regimeBlock}
 
-## ${hasPortfolio ? 'Mein Portfolio (quantity > 0 = bereits im Besitz, quantity = 0 = Kaufkandidat)' : 'Kaufkandidaten (quantity = 0, bewertet als potenzielle Neukäufe)'}
+## Portfolio & Kaufkandidaten
 ${portfolioStr}
 
-## Aktuelle News-Schlagzeilen
-${newsStr || 'Keine News verfügbar — entscheide auf Basis der Kursdaten.'}
+## News
+${newsStr || 'Keine relevanten News.'}
 
-## Marktdaten (inkl. RSI-Proxy & MA10)
+## Marktdaten (🟢=grüner Tag, 🔴=roter Tag)
 ${marketStr}
 
-Gib für jeden Eintrag ein Signal (buy/sell/hold) mit Begründung.
-- quantity > 0: beurteile ob halten, verkaufen oder nachkaufen.
-- quantity = 0: beurteile ob jetzt ein guter Einstiegspunkt ist (buy) oder nicht (hold).
-Beachte: Überverkauft = potentieller Mean-Reversion-BUY, nicht automatisch SELL.`;
+Analysiere jeden Eintrag. Kaufkandidaten nur bei GRÜNEM Tag (🟢) kaufen. Portfolio-Positionen nur bei Stop-Loss (-8%) oder Take-Profit (+15%) verkaufen.`;
 }
- 

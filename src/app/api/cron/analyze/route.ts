@@ -8,6 +8,27 @@ import { WATCHLIST_TICKERS } from '@/lib/stocks';
 
 export const maxDuration = 60;
 
+// ── Marktregime berechnen (SPY-Trend + VIX) ──────────────────────────────────
+async function getMarketRegime(): Promise<{ regime: 'RISK_OFF' | 'NORMAL' | 'RISK_ON'; spyTrend: number; vix: number }> {
+  try {
+    const [spyHistory, vixQuote] = await Promise.all([
+      getHistorical('SPY', 12),
+      getQuote('^VIX').catch(() => ({ price: 20, ticker: '^VIX', change: 0, volume: 0, name: 'VIX', currency: 'USD' })),
+    ]);
+    const spyPrices = spyHistory.map((h) => h.close ?? 0).filter((p) => p > 0);
+    const spyTrend = spyPrices.length >= 2
+      ? ((spyPrices[spyPrices.length - 1] - spyPrices[0]) / spyPrices[0]) * 100
+      : 0;
+    const vix = vixQuote.price;
+    let regime: 'RISK_OFF' | 'NORMAL' | 'RISK_ON' = 'NORMAL';
+    if (spyTrend < -5 && vix > 25) regime = 'RISK_OFF';
+    else if (spyTrend > 3 && vix < 18) regime = 'RISK_ON';
+    return { regime, spyTrend, vix };
+  } catch {
+    return { regime: 'NORMAL', spyTrend: 0, vix: 20 };
+  }
+}
+
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const querySecret = req.nextUrl.searchParams.get('secret');
@@ -23,6 +44,9 @@ export async function GET(req: NextRequest) {
 
     if (!users?.length) return NextResponse.json({ status: 'no users' });
 
+    // Marktregime einmal für alle User berechnen
+    const { regime, spyTrend, vix } = await getMarketRegime();
+
     const debugLog: any[] = [];
 
     for (const user of users) {
@@ -35,19 +59,17 @@ export async function GET(req: NextRequest) {
         ? [...new Set(positions.map((p: any) => p.ticker))]
         : [];
 
-      // 1. Quotes für ALLE Watchlist-Tickers + Portfolio (parallel)
+      // ── Vorfilter: Quotes für alle Watchlist-Tickers holen ───────────────
       const allWatchlistTickers = [...new Set([...WATCHLIST_TICKERS, ...positionTickers])];
       const allQuotes = await Promise.all(allWatchlistTickers.map(getQuote));
 
-      // 2. Technisches Vorfiltern: Portfolio-Tickers immer rein,
-      //    Watchlist nach größter absoluter Bewegung sortiert → Top 12
+      // Top-12 Mover aus Watchlist (exkl. Portfolio-Tickers)
       const positionTickerSet = new Set(positionTickers);
       const watchlistQuotes = allQuotes.filter((q) => !positionTickerSet.has(q.ticker));
       watchlistQuotes.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
       const topWatchlist = watchlistQuotes.slice(0, 12).map((q) => q.ticker);
       const tickers = [...new Set([...positionTickers, ...topWatchlist])];
 
-      // 3. History nur für die ausgewählten Tickers
       const quotes = allQuotes.filter((q) => tickers.includes(q.ticker));
       const histories = await Promise.all(
         tickers.map(async (t) => ({
@@ -57,17 +79,15 @@ export async function GET(req: NextRequest) {
         }))
       );
 
-      // 2. Kurse speichern
+      // Kurse speichern
       for (const q of quotes) {
         await supabaseAdmin.from('market_snapshots').insert({
           ticker: q.ticker, price: q.price, change_pct: q.change, volume: q.volume,
         });
       }
 
-      // 3. News via RSS
+      // News
       const news = await fetchAllNews(tickers);
-
-      // 4. News archivieren für Backtesting
       for (const n of news.slice(0, 30)) {
         try {
           await supabaseAdmin.from('news_archive').upsert(
@@ -77,95 +97,135 @@ export async function GET(req: NextRequest) {
         } catch {}
       }
 
-      // 5. KI-Analyse via OpenRouter
+      // ── Guard-Rail-Daten aus DB laden ─────────────────────────────────────
+      const now = Date.now();
+      const ago15d = new Date(now - 15 * 24 * 60 * 60 * 1000).toISOString();
+      const ago30d = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const ago7d  = new Date(now - 7  * 24 * 60 * 60 * 1000).toISOString();
+      const ago3d  = new Date(now - 3  * 24 * 60 * 60 * 1000).toISOString();
+
+      const [{ data: recentSells }, { data: buys30d }, { data: buys7d }, { data: recentBuys3d }] = await Promise.all([
+        // Tickers bei denen in letzten 15 Tagen ein SELL-Signal kam → Cooldown
+        supabaseAdmin.from('signals').select('ticker').eq('user_id', user.user_id)
+          .eq('signal_type', 'sell').gte('created_at', ago15d),
+        // Käufe pro Ticker in letzten 30 Tagen (max 2)
+        supabaseAdmin.from('signals').select('ticker').eq('user_id', user.user_id)
+          .eq('signal_type', 'buy').eq('status', 'accepted').gte('created_at', ago30d),
+        // Käufe in letzter Woche (max 5 neue Positionen/Woche)
+        supabaseAdmin.from('signals').select('ticker').eq('user_id', user.user_id)
+          .eq('signal_type', 'buy').eq('status', 'accepted').gte('created_at', ago7d),
+        // Käufe in letzten 3 Tagen → Mindesthaltedauer für Sells
+        supabaseAdmin.from('signals').select('ticker').eq('user_id', user.user_id)
+          .eq('signal_type', 'buy').gte('created_at', ago3d),
+      ]);
+
+      const cooldownTickers = new Set((recentSells ?? []).map((s: any) => s.ticker));
+      const buyCounts30d: Record<string, number> = {};
+      for (const s of buys30d ?? []) buyCounts30d[s.ticker] = (buyCounts30d[s.ticker] ?? 0) + 1;
+      const newPositionsThisWeek = new Set((buys7d ?? []).map((s: any) => s.ticker)).size;
+      const recentBuyTickers3d = new Set((recentBuys3d ?? []).map((s: any) => s.ticker));
+
+      // ── Hard Stop-Loss / Take-Profit (Code, nicht KI) ────────────────────
+      // Positionen die -8% oder +15% erreicht haben → sofort Signal erzwingen
+      const forcedSignals: { ticker: string; action: 'sell'; reason: string }[] = [];
+      for (const p of positions ?? []) {
+        const currentPrice = quotes.find((q) => q.ticker === p.ticker)?.price ?? p.buy_price;
+        const pnlPct = ((currentPrice - p.buy_price) / p.buy_price) * 100;
+        if (pnlPct <= -8) {
+          forcedSignals.push({ ticker: p.ticker, action: 'sell', reason: `Stop-Loss: ${pnlPct.toFixed(1)}% unter Einstieg (${p.buy_price.toFixed(2)}€ → ${currentPrice.toFixed(2)}€)` });
+        } else if (pnlPct >= 15) {
+          forcedSignals.push({ ticker: p.ticker, action: 'sell', reason: `Take-Profit: +${pnlPct.toFixed(1)}% über Einstieg (${p.buy_price.toFixed(2)}€ → ${currentPrice.toFixed(2)}€)` });
+        }
+      }
+
+      // ── Grüner-Tag-Filter für Mean-Reversion-Kandidaten ─────────────────
+      // Kaufe nur wenn letzter Tag positiv geschlossen hat
+      const greenDayTickers = new Set<string>();
+      for (const hist of histories) {
+        const p = hist.prices;
+        if (p.length >= 2 && p[p.length - 1] > p[p.length - 2]) {
+          greenDayTickers.add(hist.ticker);
+        }
+      }
+
+      // ── KI-Analyse ────────────────────────────────────────────────────────
       const portfolioPositions = (positions ?? []).map((p: any) => ({
         ticker: p.ticker,
         buyPrice: p.buy_price,
         quantity: p.quantity,
         currentPrice: quotes.find((q) => q.ticker === p.ticker)?.price ?? 0,
       }));
-      // Top Watchlist-Kandidaten → als Neukauf-Kandidaten (quantity=0)
-      const watchlistCandidates = topWatchlist.map((t) => {
-        const price = quotes.find((q) => q.ticker === t)?.price ?? 0;
-        return { ticker: t, buyPrice: price, quantity: 0, currentPrice: price };
-      });
+      const watchlistCandidates = topWatchlist
+        .filter((t) => !cooldownTickers.has(t))           // Cooldown
+        .filter((t) => (buyCounts30d[t] ?? 0) < 2)        // Max 2/30d
+        .filter((t) => greenDayTickers.has(t) || regime === 'RISK_ON') // Grüner Tag (außer RISK_ON)
+        .map((t) => {
+          const price = quotes.find((q) => q.ticker === t)?.price ?? 0;
+          return { ticker: t, buyPrice: price, quantity: 0, currentPrice: price };
+        });
+
       const portfolio = [...portfolioPositions, ...watchlistCandidates];
 
-      const signals = await analyzeMarket({
+      const aiSignals = await analyzeMarket({
         portfolio,
         news: news.map((n) => ({ title: n.title, source: n.source, snippet: n.snippet })),
         marketData: histories,
+        regime,
+        spyTrend,
+        vix,
       });
 
-      // 6. Signale filtern + speichern
-      // Guard rails aus Backtest-Analyse:
-      // - Kein BUY wenn bereits 2+ offene Positionen in diesem Ticker vorhanden
-      // - Kein SELL-Signal wenn Position erst in den letzten 3 Tagen gekauft (Mindesthaltedauer)
-      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
-
-      // Bestehende Positionen aus DB für Guard-Rail-Check
-      const { data: existingBuySignals } = await supabaseAdmin
-        .from('signals')
-        .select('ticker')
-        .eq('user_id', user.user_id)
-        .eq('signal_type', 'buy')
-        .eq('status', 'accepted');
-
-      const { data: recentBuys } = await supabaseAdmin
-        .from('signals')
-        .select('ticker')
-        .eq('user_id', user.user_id)
-        .eq('signal_type', 'buy')
-        .gte('created_at', threeDaysAgo);
-
-      const acceptedBuyCounts: Record<string, number> = {};
-      for (const s of existingBuySignals ?? []) {
-        acceptedBuyCounts[s.ticker] = (acceptedBuyCounts[s.ticker] ?? 0) + 1;
-      }
-      const recentBuyTickers = new Set((recentBuys ?? []).map((s: any) => s.ticker));
+      // ── Signale zusammenführen + Guard Rails anwenden ─────────────────────
+      const allSignals = [
+        ...forcedSignals.map((s) => ({ ...s, confidence: 0.95, reasoning: s.reason, targetPrice: undefined })),
+        ...aiSignals,
+      ];
 
       const savedSignals: { id: string; ticker: string; action: string; confidence: number; reasoning: string }[] = [];
-      for (const sig of signals) {
-        // Guard: max 2 akzeptierte Käufe pro Ticker
-        if (sig.action === 'buy' && (acceptedBuyCounts[sig.ticker] ?? 0) >= 2) continue;
-        // Guard: kein Verkauf wenn in den letzten 3 Tagen gekauft (Mindesthaltedauer)
-        if (sig.action === 'sell' && recentBuyTickers.has(sig.ticker)) continue;
+
+      for (const sig of allSignals) {
+        if (sig.action === 'buy') {
+          if (regime === 'RISK_OFF') continue;                          // Kein Kauf bei RISK_OFF
+          if (cooldownTickers.has(sig.ticker)) continue;                // Cooldown
+          if ((buyCounts30d[sig.ticker] ?? 0) >= 2) continue;          // Max 2/30d
+          if (newPositionsThisWeek >= 5) continue;                      // Max 5 neue/Woche
+          if (!greenDayTickers.has(sig.ticker) && regime !== 'RISK_ON') continue; // Kein fallende Messer
+        }
+        if (sig.action === 'sell') {
+          if (recentBuyTickers3d.has(sig.ticker) && sig.confidence < 0.90) continue; // Mindesthaltedauer (außer Hard Stop)
+        }
 
         const { data: saved } = await supabaseAdmin.from('signals').insert({
-          ticker: sig.ticker, signal_type: sig.action, confidence: sig.confidence,
-          reasoning: sig.reasoning, current_price: quotes.find((q) => q.ticker === sig.ticker)?.price,
-          target_price: sig.targetPrice,
+          ticker: sig.ticker,
+          signal_type: sig.action,
+          confidence: sig.confidence,
+          reasoning: sig.reasoning,
+          current_price: quotes.find((q) => q.ticker === sig.ticker)?.price,
+          target_price: (sig as any).targetPrice ?? null,
           user_id: user.user_id,
           status: 'pending',
         }).select('id').single();
         if (saved) savedSignals.push({ id: saved.id, ticker: sig.ticker, action: sig.action, confidence: sig.confidence, reasoning: sig.reasoning });
       }
 
-      // 7. Push für jeden BUY mit hoher Konfidenz (Accept/Decline)
+      // ── Push-Benachrichtigungen ────────────────────────────────────────────
       const pushResults: any[] = [];
       if (user.push_subscription) {
-        const buySignals = savedSignals.filter((s) => s.action === 'buy' && s.confidence > 0.6);
+        const buySignals = savedSignals.filter((s) => s.action === 'buy' && s.confidence > 0.60);
         for (const sig of buySignals.slice(0, 3)) {
           const ok = await sendPushNotification(user.push_subscription, {
             title: `KAUFEN: ${sig.ticker}`,
             body: sig.reasoning.slice(0, 120),
-            ticker: sig.ticker,
-            signal: 'buy',
-            signal_id: sig.id,
-            url: '/dashboard',
+            ticker: sig.ticker, signal: 'buy', signal_id: sig.id, url: '/dashboard',
           });
           pushResults.push({ ticker: sig.ticker, type: 'buy', sent: ok });
         }
-        // SELL signals without accept/decline (just info)
-        const sellSignals = savedSignals.filter((s) => s.action === 'sell' && s.confidence > 0.65);
-        for (const sig of sellSignals.slice(0, 2)) {
+        const sellSignals = savedSignals.filter((s) => s.action === 'sell');
+        for (const sig of sellSignals.slice(0, 3)) {
           const ok = await sendPushNotification(user.push_subscription, {
-            title: `VERKAUFEN: ${sig.ticker}`,
+            title: sig.confidence >= 0.90 ? `⛔ STOP-LOSS: ${sig.ticker}` : `VERKAUFEN: ${sig.ticker}`,
             body: sig.reasoning.slice(0, 120),
-            ticker: sig.ticker,
-            signal: 'sell',
-            signal_id: sig.id,
-            url: '/dashboard',
+            ticker: sig.ticker, signal: 'sell', signal_id: sig.id, url: '/dashboard',
           });
           pushResults.push({ ticker: sig.ticker, type: 'sell', sent: ok });
         }
@@ -173,8 +233,11 @@ export async function GET(req: NextRequest) {
 
       debugLog.push({
         user_id: user.user_id,
-        positions: positions.length,
+        regime, spyTrend: spyTrend.toFixed(1), vix,
+        positions: (positions ?? []).length,
         tickers,
+        forcedSignals: forcedSignals.map((s) => s.ticker + ':' + s.reason.split(':')[0]),
+        filteredOut: { cooldown: [...cooldownTickers], greenDayMissing: topWatchlist.filter((t) => !greenDayTickers.has(t)).length },
         signals: savedSignals.map((s) => ({ ticker: s.ticker, action: s.action, confidence: s.confidence })),
         hasPushSub: !!user.push_subscription,
         push: pushResults,
