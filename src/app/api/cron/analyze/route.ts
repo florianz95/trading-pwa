@@ -4,7 +4,7 @@ import { getQuote, getHistorical } from '@/lib/yahoo';
 import { analyzeMarket } from '@/lib/openrouter';
 import { fetchAllNews } from '@/lib/rss';
 import { sendPushNotification } from '@/lib/push';
-import { WATCHLIST_TICKERS, sampleWatchlist } from '@/lib/stocks';
+import { WATCHLIST_TICKERS } from '@/lib/stocks';
 
 export const maxDuration = 60;
 
@@ -35,11 +35,20 @@ export async function GET(req: NextRequest) {
         ? [...new Set(positions.map((p: any) => p.ticker))]
         : [];
 
-      // Merge portfolio tickers + 15 zufällige Watchlist-Tickers (dedupliziert)
-      const tickers = [...new Set([...positionTickers, ...sampleWatchlist(15)])];
+      // 1. Quotes für ALLE Watchlist-Tickers + Portfolio (parallel)
+      const allWatchlistTickers = [...new Set([...WATCHLIST_TICKERS, ...positionTickers])];
+      const allQuotes = await Promise.all(allWatchlistTickers.map(getQuote));
 
-      // 1. Live-Kurse + History
-      const quotes = await Promise.all(tickers.map(getQuote));
+      // 2. Technisches Vorfiltern: Portfolio-Tickers immer rein,
+      //    Watchlist nach größter absoluter Bewegung sortiert → Top 12
+      const positionTickerSet = new Set(positionTickers);
+      const watchlistQuotes = allQuotes.filter((q) => !positionTickerSet.has(q.ticker));
+      watchlistQuotes.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+      const topWatchlist = watchlistQuotes.slice(0, 12).map((q) => q.ticker);
+      const tickers = [...new Set([...positionTickers, ...topWatchlist])];
+
+      // 3. History nur für die ausgewählten Tickers
+      const quotes = allQuotes.filter((q) => tickers.includes(q.ticker));
       const histories = await Promise.all(
         tickers.map(async (t) => ({
           ticker: t,
@@ -69,20 +78,17 @@ export async function GET(req: NextRequest) {
       }
 
       // 5. KI-Analyse via OpenRouter
-      const positionTickerSet = new Set((positions ?? []).map((p: any) => p.ticker));
       const portfolioPositions = (positions ?? []).map((p: any) => ({
         ticker: p.ticker,
         buyPrice: p.buy_price,
         quantity: p.quantity,
         currentPrice: quotes.find((q) => q.ticker === p.ticker)?.price ?? 0,
       }));
-      // Watchlist-Tickers die noch nicht im Portfolio sind → als Neukauf-Kandidaten
-      const watchlistCandidates = WATCHLIST_TICKERS
-        .filter((t) => !positionTickerSet.has(t))
-        .map((t) => {
-          const price = quotes.find((q) => q.ticker === t)?.price ?? 0;
-          return { ticker: t, buyPrice: price, quantity: 0, currentPrice: price };
-        });
+      // Top Watchlist-Kandidaten → als Neukauf-Kandidaten (quantity=0)
+      const watchlistCandidates = topWatchlist.map((t) => {
+        const price = quotes.find((q) => q.ticker === t)?.price ?? 0;
+        return { ticker: t, buyPrice: price, quantity: 0, currentPrice: price };
+      });
       const portfolio = [...portfolioPositions, ...watchlistCandidates];
 
       const signals = await analyzeMarket({
