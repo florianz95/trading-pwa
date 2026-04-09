@@ -33,7 +33,18 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const querySecret = req.nextUrl.searchParams.get('secret');
   const validSecret = process.env.CRON_SECRET;
-  if (authHeader !== `Bearer ${validSecret}` && querySecret !== validSecret) {
+
+  // Auth: CRON_SECRET (cron job) OR valid Supabase user token (manual trigger)
+  const secretOk = (validSecret && (authHeader === `Bearer ${validSecret}` || querySecret === validSecret));
+  let userOk = false;
+  if (!secretOk && authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.replace('Bearer ', '');
+    const { createClient } = await import('@supabase/supabase-js');
+    const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
+    const { data: { user } } = await sb.auth.getUser(token);
+    if (user) userOk = true;
+  }
+  if (!secretOk && !userOk) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
