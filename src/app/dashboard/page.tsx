@@ -48,6 +48,7 @@ function DashboardContent() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const [expandedSignal, setExpandedSignal] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
 
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -190,6 +191,32 @@ function DashboardContent() {
     setAuthLoading(false);
   };
 
+  const triggerAnalysis = async () => {
+    if (analyzing) return;
+    setAnalyzing(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/cron/trigger', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`,
+        },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const count = data.debug?.[0]?.signals?.length ?? 0;
+        showToast(count > 0 ? `${count} neue Empfehlung${count !== 1 ? 'en' : ''} gefunden` : 'Analyse abgeschlossen — keine neuen Signale');
+        loadData();
+      } else {
+        showToast('Analyse fehlgeschlagen');
+      }
+    } catch {
+      showToast('Verbindungsfehler');
+    }
+    setAnalyzing(false);
+  };
+
   const enablePush = async () => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
       alert('Push nicht unterstützt.');
@@ -278,9 +305,32 @@ function DashboardContent() {
       )}
 
       {/* ── Fixed Header ───────────────────────────────────────────────────── */}
-      <header className="fixed top-0 left-0 right-0 z-30 bg-black/95 backdrop-blur-sm border-b border-gray-900">
+      <header className="fixed top-0 left-0 right-0 z-30 bg-black/95 backdrop-blur-sm border-b border-gray-900 relative">
         <div className="max-w-lg mx-auto flex items-center justify-between px-4 h-14">
           <span className="font-semibold text-base">Investmentberater</span>
+
+          {/* Analyse-Trigger — center */}
+          <button
+            onClick={triggerAnalysis}
+            disabled={analyzing}
+            title="Analyse jetzt starten"
+            className={`absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all ${
+              analyzing
+                ? 'border-blue-700 text-blue-400 bg-blue-950/40 opacity-80'
+                : 'border-gray-800 text-gray-500 hover:border-gray-600 hover:text-gray-300'
+            }`}
+          >
+            <svg
+              width="12" height="12" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              className={analyzing ? 'animate-spin' : ''}
+            >
+              <polyline points="23 4 23 10 17 10"/>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+            {analyzing ? 'Analysiere…' : 'Analysieren'}
+          </button>
+
           <div className="flex items-center gap-1">
             <button
               onClick={enablePush}
