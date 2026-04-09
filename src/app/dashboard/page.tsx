@@ -295,33 +295,37 @@ function DashboardContent() {
       )}
 
       {/* ── Fixed Header ───────────────────────────────────────────────────── */}
-      <header className="fixed top-0 left-0 right-0 z-30 bg-black/95 backdrop-blur-sm border-b border-gray-900 relative">
-        <div className="max-w-lg mx-auto flex items-center justify-between px-4 h-14">
-          <span className="font-semibold text-base">Investmentberater</span>
+      <header className="fixed top-0 left-0 right-0 z-30 bg-black/95 backdrop-blur-sm border-b border-gray-900">
+        <div className="max-w-lg mx-auto grid grid-cols-3 items-center px-4 h-14">
+          {/* Left: title */}
+          <span className="font-semibold text-sm">Investmentberater</span>
 
-          {/* Analyse-Trigger — center */}
-          <button
-            onClick={triggerAnalysis}
-            disabled={analyzing}
-            title="Analyse jetzt starten"
-            className={`absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all ${
-              analyzing
-                ? 'border-blue-700 text-blue-400 bg-blue-950/40 opacity-80'
-                : 'border-gray-800 text-gray-500 hover:border-gray-600 hover:text-gray-300'
-            }`}
-          >
-            <svg
-              width="12" height="12" viewBox="0 0 24 24" fill="none"
-              stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-              className={analyzing ? 'animate-spin' : ''}
+          {/* Center: analyze button */}
+          <div className="flex justify-center">
+            <button
+              onClick={triggerAnalysis}
+              disabled={analyzing}
+              title="Analyse jetzt starten"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all ${
+                analyzing
+                  ? 'border-blue-800 text-blue-400 bg-blue-950/40'
+                  : 'border-gray-800 text-gray-500 hover:border-gray-600 hover:text-gray-300'
+              }`}
             >
-              <polyline points="23 4 23 10 17 10"/>
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-            {analyzing ? 'Analysiere…' : 'Analysieren'}
-          </button>
+              <svg
+                width="11" height="11" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                className={analyzing ? 'animate-spin' : ''}
+              >
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              {analyzing ? 'Läuft…' : 'Analyse'}
+            </button>
+          </div>
 
-          <div className="flex items-center gap-1">
+          {/* Right: action icons */}
+          <div className="flex items-center gap-1 justify-end">
             <button
               onClick={enablePush}
               title={pushEnabled ? 'Benachrichtigungen aktiv' : 'Benachrichtigungen aktivieren'}
