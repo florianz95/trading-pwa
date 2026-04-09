@@ -69,12 +69,21 @@ export async function GET(req: NextRequest) {
       }
 
       // 5. KI-Analyse via OpenRouter
-      const portfolio = (positions ?? []).map((p: any) => ({
+      const positionTickerSet = new Set((positions ?? []).map((p: any) => p.ticker));
+      const portfolioPositions = (positions ?? []).map((p: any) => ({
         ticker: p.ticker,
         buyPrice: p.buy_price,
         quantity: p.quantity,
         currentPrice: quotes.find((q) => q.ticker === p.ticker)?.price ?? 0,
       }));
+      // Watchlist-Tickers die noch nicht im Portfolio sind → als Neukauf-Kandidaten
+      const watchlistCandidates = WATCHLIST_TICKERS
+        .filter((t) => !positionTickerSet.has(t))
+        .map((t) => {
+          const price = quotes.find((q) => q.ticker === t)?.price ?? 0;
+          return { ticker: t, buyPrice: price, quantity: 0, currentPrice: price };
+        });
+      const portfolio = [...portfolioPositions, ...watchlistCandidates];
 
       const signals = await analyzeMarket({
         portfolio,

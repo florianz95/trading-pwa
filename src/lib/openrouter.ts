@@ -163,17 +163,22 @@ function buildPrompt(input: AnalysisInput): string {
     })
     .join('\n');
  
-  return `Analysiere mein Portfolio und gib Signale:
- 
-## Mein Portfolio
+  const hasPortfolio = input.portfolio.some((p) => p.quantity > 0);
+
+  return `Analysiere${hasPortfolio ? ' mein Portfolio und' : ''} folgende Aktien und gib Signale:
+
+## ${hasPortfolio ? 'Mein Portfolio (quantity > 0 = bereits im Besitz, quantity = 0 = Kaufkandidat)' : 'Kaufkandidaten (quantity = 0, bewertet als potenzielle Neukäufe)'}
 ${portfolioStr}
- 
+
 ## Aktuelle News-Schlagzeilen
 ${newsStr || 'Keine News verfügbar — entscheide auf Basis der Kursdaten.'}
- 
+
 ## Marktdaten (inkl. RSI-Proxy & MA10)
 ${marketStr}
- 
-Gib für jede Position ein Signal (buy/sell/hold) mit Begründung. Beachte: Überverkauft = potentieller Mean-Reversion-BUY, nicht automatisch SELL.`;
+
+Gib für jeden Eintrag ein Signal (buy/sell/hold) mit Begründung.
+- quantity > 0: beurteile ob halten, verkaufen oder nachkaufen.
+- quantity = 0: beurteile ob jetzt ein guter Einstiegspunkt ist (buy) oder nicht (hold).
+Beachte: Überverkauft = potentieller Mean-Reversion-BUY, nicht automatisch SELL.`;
 }
  
