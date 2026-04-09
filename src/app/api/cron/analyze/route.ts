@@ -8,13 +8,12 @@ import { sendPushNotification } from '@/lib/push';
 export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
-  // AUTH TEMPORARILY DISABLED FOR TESTING
-  // const authHeader = req.headers.get('authorization');
-  // const querySecret = req.nextUrl.searchParams.get('secret');
-  // const validSecret = process.env.CRON_SECRET;
-  // if (authHeader !== `Bearer ${validSecret}` && querySecret !== validSecret) {
-  //   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  // }
+  const authHeader = req.headers.get('authorization');
+  const querySecret = req.nextUrl.searchParams.get('secret');
+  const validSecret = process.env.CRON_SECRET;
+  if (authHeader !== `Bearer ${validSecret}` && querySecret !== validSecret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
   try {
     const { data: users } = await supabaseAdmin
