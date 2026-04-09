@@ -11,45 +11,37 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-interface Signal {
-  id: string;
-  ticker: string;
-  signal_type: 'buy' | 'sell' | 'hold';
-  confidence: number;
-  reasoning: string;
-  current_price: number;
-  target_price: number;
-  created_at: string;
-}
-
-interface Position {
-  id: string;
-  ticker: string;
-  name: string;
-  buy_price: number;
-  quantity: number;
-  buy_date: string;
-  order_fee: number;
-  asset_type: string;
-}
-
-interface Quote {
-  ticker: string;
-  price: number;
-  change: number;
-  name: string;
-}
-
 export default function DashboardPage() {
-  const [signals, setSignals] = useState<Signal[]>([]);
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [quotes, setQuotes] = useState<Record<string, Quote>>({});
+  const [signals, setSignals] = useState<any[]>([]);
+  const [positions, setPositions] = useState<any[]>([]);
+  const [quotes, setQuotes] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<any>(null);
   const [pushEnabled, setPushEnabled] = useState(false);
-  const [selectedPosition, setSelectedPosition] = useState<Position | null>(null);
+  const [selectedPosition, setSelectedPosition] = useState<any>(null);
+  const [email, setEmail] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
 
+  // Check auth on mount
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) {
+        setUser(data.user);
+      } else {
+        setLoading(false);
+      }
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => { listener.subscription.unsubscribe(); };
+  }, []);
+
+  // Load data when user is set
   const loadData = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
     const [signalsRes, positionsRes] = await Promise.all([
@@ -60,66 +52,88 @@ export default function DashboardPage() {
     setSignals(signalsRes.data ?? []);
     setPositions(positionsRes.data ?? []);
 
-    // Fetch live quotes
-    const tickers = [...new Set((positionsRes.data ?? []).map((p: Position) => p.ticker))];
+    const tickers = [...new Set((positionsRes.data ?? []).map((p: any) => p.ticker))];
     if (tickers.length > 0) {
       try {
         const res = await fetch(`/api/market/quote?tickers=${tickers.join(',')}`);
         const data = await res.json();
-        const map: Record<string, Quote> = {};
-        for (const q of data.quotes ?? []) {
-          map[q.ticker] = q;
-        }
+        const map: Record<string, any> = {};
+        for (const q of data.quotes ?? []) map[q.ticker] = q;
         setQuotes(map);
-      } catch {
-        // Offline or API error
-      }
+      } catch {}
     }
 
     setLoading(false);
-  }, []);
+  }, [user]);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (user) loadData();
+  }, [user, loadData]);
 
-  // Push notification subscription
+  // Magic Link Login
+  const handleLogin = async () => {
+    setAuthLoading(true);
+    const { error } = await supabase.auth.signInWithOtp({ email });
+    if (error) {
+      setAuthMessage('Fehler: ' + error.message);
+    } else {
+      setAuthMessage('Magic Link gesendet! Prüfe deine E-Mails.');
+    }
+    setAuthLoading(false);
+  };
+
+  // Push subscription
   const enablePush = async () => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-      alert('Push-Benachrichtigungen werden auf diesem Gerät nicht unterstützt.');
+      alert('Push wird auf diesem Gerät nicht unterstützt.');
       return;
     }
-
     try {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
       });
-
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
       await fetch('/api/push/subscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subscription: sub.toJSON(), userId: user.id }),
       });
-
       setPushEnabled(true);
     } catch (err) {
       console.error('Push subscription failed:', err);
     }
   };
 
-  // Calculate total portfolio value
-  const totalInvested = positions.reduce((sum, p) => sum + p.buy_price * p.quantity + p.order_fee, 0);
-  const totalCurrent = positions.reduce((sum, p) => {
-    const q = quotes[p.ticker];
-    return sum + (q ? q.price * p.quantity : p.buy_price * p.quantity);
-  }, 0);
-  const totalProfitPct = totalInvested > 0 ? ((totalCurrent - totalInvested) / totalInvested) * 100 : 0;
+  // ── Login Screen ──
+  if (!user) {
+    return (
+      <div className="max-w-sm mx-auto px-4 py-20 text-center">
+        <h1 className="text-2xl font-semibold mb-2">Trading Advisor</h1>
+        <p className="text-sm text-gray-400 mb-8">Melde dich an um fortzufahren</p>
+        <input
+          type="email"
+          placeholder="deine@email.de"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm mb-3 focus:border-blue-500 focus:outline-none"
+        />
+        <button
+          onClick={handleLogin}
+          disabled={authLoading || !email}
+          className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm py-3 rounded-lg transition-colors"
+        >
+          {authLoading ? 'Sende...' : 'Magic Link senden'}
+        </button>
+        {authMessage && (
+          <p className="text-sm text-gray-400 mt-4">{authMessage}</p>
+        )}
+      </div>
+    );
+  }
 
+  // ── Loading ──
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -128,27 +142,41 @@ export default function DashboardPage() {
     );
   }
 
+  // ── Dashboard ──
+  const totalInvested = positions.reduce((sum, p) => sum + p.buy_price * p.quantity + p.order_fee, 0);
+  const totalCurrent = positions.reduce((sum, p) => {
+    const q = quotes[p.ticker];
+    return sum + (q ? q.price * p.quantity : p.buy_price * p.quantity);
+  }, 0);
+  const totalProfitPct = totalInvested > 0 ? ((totalCurrent - totalInvested) / totalInvested) * 100 : 0;
+
   return (
     <div className="max-w-lg mx-auto px-4 py-6 pb-24">
-      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-semibold">Trading Advisor</h1>
           <p className="text-sm text-gray-400">Dein KI-Berater</p>
         </div>
-        <button
-          onClick={enablePush}
-          className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-            pushEnabled
-              ? 'border-emerald-600 text-emerald-400 bg-emerald-950/40'
-              : 'border-gray-700 text-gray-400 hover:border-gray-500'
-          }`}
-        >
-          {pushEnabled ? '● Push aktiv' : 'Push aktivieren'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={enablePush}
+            className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+              pushEnabled
+                ? 'border-emerald-600 text-emerald-400 bg-emerald-950/40'
+                : 'border-gray-700 text-gray-400 hover:border-gray-500'
+            }`}
+          >
+            {pushEnabled ? '● Push aktiv' : 'Push aktivieren'}
+          </button>
+          <button
+            onClick={() => supabase.auth.signOut().then(() => setUser(null))}
+            className="text-xs text-gray-500 hover:text-gray-300"
+          >
+            Logout
+          </button>
+        </div>
       </div>
 
-      {/* Portfolio Summary */}
       <div className="grid grid-cols-3 gap-3 mb-6">
         <div className="bg-gray-900 rounded-xl p-3">
           <p className="text-[11px] text-gray-500 uppercase tracking-wider">Investiert</p>
@@ -166,7 +194,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Latest Signals */}
       <div className="mb-6">
         <h2 className="text-sm font-medium text-gray-400 mb-3">Letzte Signale</h2>
         {signals.length === 0 ? (
@@ -180,22 +207,14 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* Positions */}
       <div className="mb-6">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-medium text-gray-400">Mein Portfolio</h2>
-          <a href="/portfolio" className="text-xs text-blue-400 hover:text-blue-300">
-            Bearbeiten →
-          </a>
+          <a href="/portfolio" className="text-xs text-blue-400 hover:text-blue-300">Bearbeiten →</a>
         </div>
-        <PortfolioTable
-          positions={positions}
-          quotes={quotes}
-          onSelect={(p) => setSelectedPosition(p)}
-        />
+        <PortfolioTable positions={positions} quotes={quotes} onSelect={(p) => setSelectedPosition(p)} />
       </div>
 
-      {/* Profit Calculator Modal */}
       {selectedPosition && (
         <ProfitCalculator
           position={selectedPosition}
