@@ -1,4 +1,5 @@
-import yahooFinance from 'yahoo-finance2';
+import { YahooFinance } from 'yahoo-finance2';
+const yahooFinance = new YahooFinance();
 
 export async function getQuote(ticker: string) {
   const quote = await yahooFinance.quote(ticker);
