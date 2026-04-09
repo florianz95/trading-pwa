@@ -33,7 +33,24 @@
     "afterFiles": [],
     "fallback": []
   },
-  "dynamicRoutes": [],
+  "dynamicRoutes": [
+    {
+      "page": "/api/signals/[id]/accept",
+      "regex": "^/api/signals/([^/]+?)/accept(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/signals/(?<nxtPid>[^/]+?)/accept(?:/)?$"
+    },
+    {
+      "page": "/api/signals/[id]/decline",
+      "regex": "^/api/signals/([^/]+?)/decline(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/signals/(?<nxtPid>[^/]+?)/decline(?:/)?$"
+    }
+  ],
   "staticRoutes": [
     {
       "page": "/",

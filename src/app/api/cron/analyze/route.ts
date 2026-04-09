@@ -9,7 +9,9 @@ export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const querySecret = req.nextUrl.searchParams.get('secret');
+  const validSecret = process.env.CRON_SECRET;
+  if (authHeader !== `Bearer ${validSecret}` && querySecret !== validSecret) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -72,26 +74,44 @@ export async function GET(req: NextRequest) {
         marketData: histories,
       });
 
-      // 6. Signale speichern
+      // 6. Signale speichern (mit user_id + status)
+      const savedSignals: { id: string; ticker: string; action: string; confidence: number; reasoning: string }[] = [];
       for (const sig of signals) {
-        await supabaseAdmin.from('signals').insert({
+        const { data: saved } = await supabaseAdmin.from('signals').insert({
           ticker: sig.ticker, signal_type: sig.action, confidence: sig.confidence,
           reasoning: sig.reasoning, current_price: quotes.find((q) => q.ticker === sig.ticker)?.price,
           target_price: sig.targetPrice,
-        });
+          user_id: user.user_id,
+          status: 'pending',
+        }).select('id').single();
+        if (saved) savedSignals.push({ id: saved.id, ticker: sig.ticker, action: sig.action, confidence: sig.confidence, reasoning: sig.reasoning });
       }
 
-      // 7. Push bei buy/sell + hoher Konfidenz
-      const actionable = signals.filter((s) => s.action !== 'hold' && s.confidence > 0.6);
-      if (actionable.length > 0 && user.push_subscription) {
-        const top = actionable[0];
-        const label = top.action === 'buy' ? 'KAUFEN' : 'VERKAUFEN';
-        await sendPushNotification(user.push_subscription, {
-          title: `${label}: ${top.ticker}`,
-          body: top.reasoning.slice(0, 120),
-          ticker: top.ticker, signal: top.action,
-          url: `/dashboard?signal=${top.ticker}`,
-        });
+      // 7. Push für jeden BUY mit hoher Konfidenz (Accept/Decline)
+      if (user.push_subscription) {
+        const buySignals = savedSignals.filter((s) => s.action === 'buy' && s.confidence > 0.6);
+        for (const sig of buySignals.slice(0, 3)) {
+          await sendPushNotification(user.push_subscription, {
+            title: `KAUFEN: ${sig.ticker}`,
+            body: sig.reasoning.slice(0, 120),
+            ticker: sig.ticker,
+            signal: 'buy',
+            signal_id: sig.id,
+            url: '/dashboard',
+          });
+        }
+        // SELL signals without accept/decline (just info)
+        const sellSignals = savedSignals.filter((s) => s.action === 'sell' && s.confidence > 0.65);
+        for (const sig of sellSignals.slice(0, 2)) {
+          await sendPushNotification(user.push_subscription, {
+            title: `VERKAUFEN: ${sig.ticker}`,
+            body: sig.reasoning.slice(0, 120),
+            ticker: sig.ticker,
+            signal: 'sell',
+            signal_id: sig.id,
+            url: '/dashboard',
+          });
+        }
       }
     }
 

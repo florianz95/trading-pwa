@@ -101,6 +101,24 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   type __Unused = __Check
 }
 
+// Validate ../../src/app/api/signals/[id]/accept/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/signals/[id]/accept">> = Specific
+  const handler = {} as typeof import("../../src/app/api/signals/[id]/accept/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../src/app/api/signals/[id]/decline/route.ts
+{
+  type __IsExpected<Specific extends RouteHandlerConfig<"/api/signals/[id]/decline">> = Specific
+  const handler = {} as typeof import("../../src/app/api/signals/[id]/decline/route.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 
 
 

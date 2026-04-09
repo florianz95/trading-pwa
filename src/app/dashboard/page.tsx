@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, Suspense } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@supabase/supabase-js';
 import SignalCard from '@/components/SignalCard';
 import PortfolioTable from '@/components/PortfolioTable';
@@ -11,8 +12,9 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-export default function DashboardPage() {
+function DashboardContent() {
   const [signals, setSignals] = useState<any[]>([]);
+  const [pendingSignals, setPendingSignals] = useState<any[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
   const [quotes, setQuotes] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
@@ -23,6 +25,15 @@ export default function DashboardPage() {
   const [password, setPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
+
+  // Accept modal state
+  const [acceptingSignal, setAcceptingSignal] = useState<any>(null);
+  const [investAmount, setInvestAmount] = useState('100');
+  const [acceptLoading, setAcceptLoading] = useState(false);
+  const [acceptToast, setAcceptToast] = useState('');
+
+  const searchParams = useSearchParams();
+  const router = useRouter();
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -37,12 +48,21 @@ export default function DashboardPage() {
 
   const loadData = useCallback(async () => {
     if (!user) return;
-    const [signalsRes, positionsRes] = await Promise.all([
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const [signalsRes, positionsRes, pendingRes] = await Promise.all([
       supabase.from('signals').select('*').order('created_at', { ascending: false }).limit(10),
       supabase.from('positions').select('*').eq('user_id', user.id),
+      supabase.from('signals')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('signal_type', 'buy')
+        .eq('status', 'pending')
+        .gte('created_at', since)
+        .order('confidence', { ascending: false }),
     ]);
     setSignals(signalsRes.data ?? []);
     setPositions(positionsRes.data ?? []);
+    setPendingSignals(pendingRes.data ?? []);
 
     const tickers = [...new Set((positionsRes.data ?? []).map((p: any) => p.ticker))];
     if (tickers.length > 0) {
@@ -58,6 +78,64 @@ export default function DashboardPage() {
   }, [user]);
 
   useEffect(() => { if (user) loadData(); }, [user, loadData]);
+
+  // Handle notification click params (?signal=ID&action=accept/decline)
+  useEffect(() => {
+    if (!user || loading) return;
+    const signalId = searchParams.get('signal');
+    const action = searchParams.get('action');
+    if (!signalId) return;
+
+    if (action === 'accept') {
+      // Find signal in pending list or fetch it
+      supabase.from('signals').select('*').eq('id', signalId).single().then(({ data }) => {
+        if (data) {
+          setAcceptingSignal(data);
+          router.replace('/dashboard', { scroll: false });
+        }
+      });
+    } else if (action === 'decline') {
+      fetch(`/api/signals/${signalId}/decline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      }).then(() => {
+        setPendingSignals((prev) => prev.filter((s) => s.id !== signalId));
+        router.replace('/dashboard', { scroll: false });
+      });
+    }
+  }, [user, loading, searchParams, router]);
+
+  const handleAccept = async () => {
+    if (!acceptingSignal || !user) return;
+    setAcceptLoading(true);
+    const res = await fetch(`/api/signals/${acceptingSignal.id}/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user.id, amount: parseFloat(investAmount) }),
+    });
+    const data = await res.json();
+    setAcceptLoading(false);
+    if (res.ok) {
+      setAcceptingSignal(null);
+      setAcceptToast(`✅ ${acceptingSignal.ticker} gekauft — ${data.quantity.toFixed(4)} Anteile @ ${data.buyPrice?.toFixed(2)}€`);
+      setTimeout(() => setAcceptToast(''), 4000);
+      loadData();
+    } else {
+      setAcceptToast(`Fehler: ${data.error}`);
+      setTimeout(() => setAcceptToast(''), 4000);
+    }
+  };
+
+  const handleDecline = async (signalId: string) => {
+    if (!user) return;
+    await fetch(`/api/signals/${signalId}/decline`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user.id }),
+    });
+    setPendingSignals((prev) => prev.filter((s) => s.id !== signalId));
+  };
 
   const handleLogin = async () => {
     setAuthLoading(true);
@@ -139,6 +217,13 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-lg mx-auto px-4 py-6 pb-24">
+      {/* Toast */}
+      {acceptToast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm shadow-xl max-w-sm w-full text-center">
+          {acceptToast}
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-semibold">Trading Advisor</h1>
@@ -181,6 +266,44 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Pending BUY signals — awaiting accept/decline */}
+      {pendingSignals.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-sm font-medium text-gray-400 mb-3">
+            Neue Signale <span className="text-emerald-400">({pendingSignals.length})</span>
+          </h2>
+          <div className="space-y-3">
+            {pendingSignals.map((sig) => (
+              <div key={sig.id} className="bg-emerald-950/30 border border-emerald-800/60 rounded-xl p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400">KAUFEN</span>
+                    <span className="font-medium">{sig.ticker}</span>
+                    <span className="text-xs text-gray-500">{Math.round(sig.confidence * 100)}%</span>
+                  </div>
+                  <span className="text-xs text-gray-500">{sig.current_price?.toFixed(2)}€</span>
+                </div>
+                <p className="text-xs text-gray-400 mb-3 line-clamp-2">{sig.reasoning}</p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setAcceptingSignal(sig); setInvestAmount('100'); }}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium py-2 rounded-lg transition-colors"
+                  >
+                    ✅ Kaufen
+                  </button>
+                  <button
+                    onClick={() => handleDecline(sig.id)}
+                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium py-2 rounded-lg transition-colors"
+                  >
+                    ❌ Ablehnen
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="mb-6">
         <h2 className="text-sm font-medium text-gray-400 mb-3">Letzte Signale</h2>
         {signals.length === 0 ? (
@@ -209,6 +332,73 @@ export default function DashboardPage() {
           onClose={() => setSelectedPosition(null)}
         />
       )}
+
+      {/* Accept modal */}
+      {acceptingSignal && (
+        <div className="fixed inset-0 bg-black/70 flex items-end justify-center z-40 p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-sm p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-semibold text-lg">{acceptingSignal.ticker} kaufen</h3>
+                <p className="text-xs text-gray-500">Kurs: {acceptingSignal.current_price?.toFixed(2)}€</p>
+              </div>
+              <button
+                onClick={() => setAcceptingSignal(null)}
+                className="text-gray-500 hover:text-gray-300 text-xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-400 mb-4 line-clamp-3">{acceptingSignal.reasoning}</p>
+
+            <div className="mb-4">
+              <label className="text-xs text-gray-500 mb-1 block">Betrag investieren (€)</label>
+              <input
+                type="number"
+                min="1"
+                step="10"
+                value={investAmount}
+                onChange={(e) => setInvestAmount(e.target.value)}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm focus:border-emerald-500 focus:outline-none"
+              />
+              {acceptingSignal.current_price && parseFloat(investAmount) > 0 && (
+                <p className="text-xs text-gray-500 mt-1">
+                  ≈ {(parseFloat(investAmount) / acceptingSignal.current_price).toFixed(4)} Anteile
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={handleAccept}
+                disabled={acceptLoading || !investAmount || parseFloat(investAmount) <= 0}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium py-3 rounded-xl transition-colors"
+              >
+                {acceptLoading ? 'Wird gekauft...' : '✅ Jetzt kaufen'}
+              </button>
+              <button
+                onClick={() => { handleDecline(acceptingSignal.id); setAcceptingSignal(null); }}
+                className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium py-3 rounded-xl transition-colors"
+              >
+                ❌ Ablehnen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-pulse text-gray-400">Lade Dashboard...</div>
+      </div>
+    }>
+      <DashboardContent />
+    </Suspense>
   );
 }

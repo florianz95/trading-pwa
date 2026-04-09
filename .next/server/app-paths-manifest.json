@@ -2,6 +2,8 @@
   "/_not-found/page": "app/_not-found/page.js",
   "/api/market/quote/route": "app/api/market/quote/route.js",
   "/api/push/subscribe/route": "app/api/push/subscribe/route.js",
+  "/api/signals/[id]/accept/route": "app/api/signals/[id]/accept/route.js",
+  "/api/signals/[id]/decline/route": "app/api/signals/[id]/decline/route.js",
   "/api/cron/analyze/route": "app/api/cron/analyze/route.js",
   "/dashboard/page": "app/dashboard/page.js",
   "/page": "app/page.js",

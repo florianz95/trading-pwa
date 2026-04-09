@@ -1,7 +1,7 @@
 // Service Worker for Trading PWA
 // Handles push notifications and offline caching
 
-const CACHE_NAME = 'trading-pwa-v1';
+const CACHE_NAME = 'trading-pwa-v2';
 const OFFLINE_URLS = ['/', '/dashboard', '/portfolio'];
 
 self.addEventListener('install', (event) => {
@@ -23,10 +23,20 @@ self.addEventListener('activate', (event) => {
 // Push notification handler
 self.addEventListener('push', (event) => {
   const data = event.data?.json() ?? {};
-  const { title = 'Trading Signal', body, ticker, signal, url } = data;
+  const { title = 'Trading Signal', body, ticker, signal, signal_id, url } = data;
 
   const icons = { buy: '🟢', sell: '🔴', hold: '🟡' };
   const icon = icons[signal] || '📊';
+  const isBuy = signal === 'buy';
+
+  const actions = isBuy
+    ? [
+        { action: 'accept', title: '✅ Kaufen' },
+        { action: 'decline', title: '❌ Ablehnen' },
+      ]
+    : [
+        { action: 'view', title: '👁 Details' },
+      ];
 
   event.waitUntil(
     self.registration.showNotification(title, {
@@ -34,17 +44,36 @@ self.addEventListener('push', (event) => {
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
       tag: `signal-${ticker}-${Date.now()}`,
-      data: { url: url || '/dashboard' },
-      actions: [
-        { action: 'view', title: 'Details ansehen' },
-        { action: 'dismiss', title: 'Schließen' },
-      ],
+      requireInteraction: isBuy, // keep BUY notifications visible until acted on
+      data: { url: url || '/dashboard', signal_id, ticker, signal },
+      actions,
     })
   );
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const url = event.notification.data?.url || '/dashboard';
-  event.waitUntil(clients.openWindow(url));
+  const { signal_id, url } = event.notification.data || {};
+
+  let targetUrl = url || '/dashboard';
+  if (signal_id) {
+    if (event.action === 'accept') {
+      targetUrl = `/dashboard?signal=${signal_id}&action=accept`;
+    } else if (event.action === 'decline') {
+      targetUrl = `/dashboard?signal=${signal_id}&action=decline`;
+    }
+  }
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      // Focus existing window if open, otherwise open new one
+      for (const client of windowClients) {
+        if (client.url.includes('/dashboard') && 'focus' in client) {
+          client.navigate(targetUrl);
+          return client.focus();
+        }
+      }
+      return clients.openWindow(targetUrl);
+    })
+  );
 });

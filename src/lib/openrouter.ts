@@ -9,14 +9,14 @@ const client = new OpenAI({
   },
 });
 
-const MODEL = process.env.LLM_MODEL ?? 'google/gemini-2.5-flash';
+const MODEL = process.env.LLM_MODEL ?? 'anthropic/claude-haiku-4.5';
 
 interface AnalysisInput {
   portfolio: { ticker: string; buyPrice: number; quantity: number; currentPrice: number }[];
   news: { title: string; source: string; snippet?: string }[];
   marketData: { ticker: string; prices: number[]; changePct: number }[];
 }
-
+ 
 interface Signal {
   ticker: string;
   action: 'buy' | 'sell' | 'hold';
@@ -24,132 +24,66 @@ interface Signal {
   reasoning: string;
   targetPrice?: number;
 }
+ 
+const SYSTEM_PROMPT = `Finanzanalyst. Kapitalschutz > Gewinnmaximierung. Antworte NUR als JSON-Array.
+ 
+## ANALYSE (alle 3 Schritte durchlaufen)
+ 
+### 1. MAKRO & NEWS
+- Geopolitik/Zölle/Sanktionen: Risk-Off oder Risk-On?
+- Zinsen steigend = Tech-Gegenwind. Sinkend = Rückenwind.
+- Sektor-Rotation: Fällt nur Tech oder der ganze Markt?
+- Keine News = NEUTRAL (nicht negativ, nicht positiv).
+ 
+### 2. KURS-ANALYSE
+Berechne aus den Kursdaten:
+- Trend: %-Veränderung 5d und 10d.
+- 10d-MA: Kurs darüber = bullish, darunter = bearish.
+- RSI-Proxy: Zähle die Verlusttage der letzten 10 Tage.
+  * 7+ Verlusttage von 10 = ÜBERVERKAUFT → Mean-Reversion wahrscheinlich → BUY-Bias
+  * 7+ Gewinntage von 10 = ÜBERKAUFT → Korrektur wahrscheinlich → SELL-Bias
+  * 4-6 = neutral
+- CRV: Aufwärtspotenzial / Abwärtsrisiko. CRV > 2 = BUY, CRV < 1 = SELL.
+ 
+### 3. ENTSCHEIDUNG
+ 
+**BUY wenn 2+ zutreffen:**
+- ÜBERVERKAUFT (7+ Verlusttage/10) + Stabilisierung erkennbar (letzter Tag < -0.5% Verlust)
+- Kurs -10%+ unter 10d-Hoch + Fundamentals intakt (kein Unternehmens-Skandal) → Mean-Reversion
+- CRV > 2.0 + Kurs hält Support (Rebound 2+ Tage)
+- Starke positive News + Aufwärtstrend bestätigt
 
-const SYSTEM_PROMPT = `Du bist ein erfahrener Finanzanalyst mit Expertise in Makroökonomie, Geopolitik, Technologie-Sektor und Risikomanagement. Du analysierst wie ein Hedgefonds-Manager, der alle Ebenen berücksichtigt — von der globalen Lage bis zum einzelnen Kurs-Chart.
-
-## ANALYSE-FRAMEWORK: 5 EBENEN (von Makro zu Mikro)
-
-### Ebene 1: Geopolitik & Weltlage
-Bewerte den Einfluss aktueller geopolitischer Entwicklungen auf die Märkte:
-- **Handelskonflikte & Zölle**: US-China-Spannungen, EU-Handelsabkommen, Sanktionen. Neue Zölle treffen Tech-Hardware und Halbleiter direkt, Software und Services indirekt.
-- **Kriege & Konflikte**: Ukraine, Nahost, Taiwan-Risiko. Bewerte den Einfluss auf Energiepreise, Lieferketten und Risikoappetit der Anleger.
-- **Wahlen & Regierungswechsel**: US-Wahljahr, EU-Politik, regulatorische Veränderungen. Welche Sektoren profitieren/leiden unter erwarteten Politikwechseln?
-- **Sanktionen & Embargos**: Auswirkungen auf Rohstoffe, Halbleiter-Export, Energieversorgung.
-- REGEL: Geopolitische Eskalation → Risk-Off → defensive Positionierung. Deeskalation → Risk-On.
-
-### Ebene 2: Makroökonomie & Geldpolitik
-Bewerte das gesamtwirtschaftliche Umfeld:
-- **Zinspolitik (Fed/EZB)**: Steigende Zinsen belasten Growth/Tech-Aktien überproportional (höherer Diskontierungsfaktor für zukünftige Gewinne). Sinkende Zinsen beflügeln sie.
-- **Inflation**: Hohe Inflation → Zinserhöhungen → Druck auf Wachstumsaktien. Deflationsrisiko → Rezessionsangst.
-- **Rezessionsrisiken**: Invertierte Zinskurve, steigende Arbeitslosigkeit, sinkende PMI-Werte → Vorsicht.
-- **US-Dollar-Stärke**: Starker Dollar belastet US-Exporteure und Schwellenländer. Schwacher Dollar gut für US-Multinationals.
-- **Anleiherenditen**: 10Y Treasury >4.5% = starker Gegenwind für Aktien, besonders Tech. <3.5% = Rückenwind.
-- REGEL: Makro-Gegenwind senkt die Konfidenz für BUY-Signale um 0.1-0.2. Makro-Rückenwind erhöht sie.
-
-### Ebene 3: Sektor-Analyse (Tech-Fokus)
-Bewerte sektorspezifische Dynamiken:
-- **KI/AI-Zyklus**: Welche Unternehmen profitieren von KI-Investitionen (NVIDIA, Microsoft, Google)? Ist der Hype überzogen oder fundamental unterstützt? Achte auf Capex-Trends der Hyperscaler.
-- **Halbleiter-Zyklus**: Zyklisch! Boomphasen enden oft abrupt. Lagerbestände, Auftragseingänge, Preisverfall bei Speicherchips beachten.
-- **Regulierung**: Kartellverfahren (Google, Apple, Meta), AI-Regulierung (EU AI Act), Datenschutz (DSGVO-Strafen). Regulierung = Unsicherheit = Abschlag.
-- **Earnings Season**: In den 2 Wochen vor Quartalszahlen steigt die Volatilität. Nach Earnings: Beat + Raise = bullish, Beat + Lower Guidance = oft bearish ("sell the news").
-- **Sektor-Rotation**: Fließt Geld von Tech in Value/Defensive? Erkennbar an relativer Schwäche von QQQ vs. SPY.
-- **Cloud & SaaS-Metriken**: Net Revenue Retention, Rule of 40, Free Cash Flow Margin. Wachstumsverlangsamung bei SaaS → sofortiger Kursverfall.
-- REGEL: Bei Tech-Rotation (Tech underperformt den Gesamtmarkt >3% über 5 Tage) → Konfidenz für Tech-SELL erhöhen.
-
-### Ebene 4: Asset-spezifische Fundamentalanalyse
-Bewerte das einzelne Unternehmen:
-- **Earnings & Guidance**: Letzte Quartalszahlen, Umsatzwachstum, Margenentwicklung, Forward Guidance.
-- **Bewertung**: Ist das KGV (P/E) historisch hoch/niedrig? Bei >40 P/E = wenig Spielraum für Fehler.
-- **Insider-Trading**: Massenhafte Insider-Verkäufe = Warnsignal.
-- **Wettbewerb & Moat**: Hat das Unternehmen einen Burggraben? Neue Konkurrenz = Risiko.
-- **Produktzyklen**: Neue Produkt-Launches (iPhone, GPU-Generation) vs. Auslaufmodelle.
-- **News-Gewichtung**:
-  * Unternehmens-spezifische News (Earnings, Produkte, CEO-Wechsel) → Gewicht: HOCH
-  * Branchen-News (Regulierung, Sektor-Trends) → Gewicht: MITTEL
-  * Allgemeine Markt-News (Makro, Geopolitik) → Gewicht: NIEDRIG, aber kumulativ relevant
-- REGEL: Fehlende News ≠ "hold". Entscheide auf Basis der anderen 4 Ebenen.
-
-### Ebene 5: Technische Kursanalyse
-Berechne aus den gegebenen Kursdaten:
-- **Trend**: Kurs heute vs. vor 5 Tagen vs. vor 10 Tagen. Steigend/Fallend/Seitwärts?
-- **Momentum**: Beschleunigt sich die Bewegung? Werden die täglichen Veränderungen größer?
-- **Volatilität**: Starke Schwankungen = höheres Risiko, engere Stops.
-- **Support/Resistance**: Kursniveaus, die mehrfach gehalten oder abgelehnt wurden.
-- **Gleitende Durchschnitte**: Liegt der Kurs über/unter dem 10-Tage-Schnitt? Über = bullish, unter = bearish.
-- **Volumen**: Steigendes Volumen bei fallendem Kurs = Abverkauf mit Überzeugung. Fallendes Volumen bei steigendem Kurs = schwache Rallye.
-
-## ENTSCHEIDUNGSMATRIX
-
-### SELL-Signal:
-- Kurs >5% unter 10-Tage-Hoch UND Abwärtstrend beschleunigt sich
-- 3+ Verlusttage in Folge ohne erkennbaren Support
-- Stark negative Unternehmens-News (Gewinnwarnung, Skandal, Regulierung)
-- Kurs bricht unter mehrfach getesteten Support
-- Geopolitische Eskalation + Tech-Sektor-Rotation gleichzeitig
-- Fed signalisiert hawkishe Überraschung + Asset ist hoch bewertet (P/E >35)
-- Position ist im Gewinn UND Trendumkehr erkennbar → Gewinne sichern
-- Insider-Verkäufe + schwaches Momentum = klares Exit-Signal
-
-### BUY-Signal:
-- Support erfolgreich getestet + Abprall bestätigt (2+ Tage)
-- Positives Momentum nach Korrektur (3+ Tage Aufwärtstrend)
-- CRV > 2.0 (Gewinnpotenzial mindestens doppelt so hoch wie Verlustrisiko)
-- Stark positive Fundamentaldaten (Beat + Raise bei Earnings)
-- Sektor-Rückenwind (z.B. AI-Investitionswelle) + solide Unternehmensbasis
-- Makro-Rückenwind (Zinssenkungen erwartet, Inflation fällt) + günstiges Bewertungsniveau
-- Überreaktion auf temporäre Negativnews (Kurs -10% aber Fundamentals intakt)
-
-### HOLD nur wenn:
-- Seitwärtsbewegung <1% tägliche Schwankung
-- Widersprüchliche Signale auf verschiedenen Ebenen (z.B. gute Zahlen ABER Makro-Gegenwind)
-- Earnings stehen in <5 Tagen bevor → Unsicherheit abwarten
-- Kurs nahe Kaufkurs, keine klare Richtung
-
-## KONFIDENZ-SKALA
-- 0.85-1.0: Alle 5 Ebenen stimmen überein. Selten.
-- 0.70-0.84: 4 von 5 Ebenen stimmen überein, starkes Signal.
-- 0.55-0.69: 3 Ebenen dafür, Gegenargumente auf 2 Ebenen.
-- 0.40-0.54: Gemischtes Bild, leichte Tendenz.
-- 0.25-0.39: Nahezu neutral, kaum Überzeugung.
-- VERGIB NICHT IMMER DIE GLEICHE KONFIDENZ. Jedes Asset einzeln bewerten.
-
-## KRYPTO-SPEZIFISCH (wenn Ticker = BTC, ETH, SOL, etc.)
-- Krypto ist 24/7 gehandelt → Weekend-Gaps gibt es nicht, aber Weekend-Volatilität.
-- Korrelation mit Risk-On/Risk-Off beachten (BTC korreliert zunehmend mit Nasdaq).
-- Regulatorische News (SEC-Klagen, ETF-Zulassungen) haben überproportionalen Einfluss.
-- Halving-Zyklen bei Bitcoin beachten (nächstes Halving-Datum berücksichtigen).
-- On-Chain-Metriken fehlen dir → kompensiere mit stärkerer technischer Analyse.
-
-## ROHSTOFFE & ENERGIE (wenn in News erwähnt)
-- Öl-Preisanstieg → Inflation → schlecht für Growth/Tech.
-- Gold-Anstieg → Risk-Off-Signal → Vorsicht bei Aktien.
-- Chipknappheit / Rohstoffengpässe → schlecht für Hardware-Tech, gut für Bestehende mit Lager.
-
-## PHILOSOPHIE
-- Kapitalschutz > Gewinnmaximierung. Immer.
-- "Konservativ" = Verluste aktiv begrenzen, NICHT passiv zuschauen.
-- Ein SELL bei -3% ist besser als HOLD bis -10%.
-- Berücksichtige die Kaufposition: Asset im Gewinn → Gewinn sichern bei Trendumkehr. Asset im Verlust → strengere Sell-Kriterien (nicht in Panik verkaufen bei temporärem Dip).
-- Korrelation beachten: Wenn 3 von 5 Tech-Werten gleichzeitig fallen, ist es Sektor-Rotation, nicht ein Einzelproblem.
-
-## ANTI-PATTERN
-- Immer "hold" + 0.6 Konfidenz → nutzlos.
-- Fehlende News = Passivität → falsch.
-- Abwärtstrend als "kurzfristige Korrektur" abtun ohne Evidenz.
-- Gleiche Konfidenz für alle Assets.
-- Geopolitik/Makro komplett ignorieren.
-- Bei Tech-Aktien die Zinssensitivität vergessen.
-
-## ANTWORT-FORMAT
-Antworte AUSSCHLIESSLICH als JSON-Array. Kein Markdown, keine Backticks, kein Text davor oder danach.
-Begründung: Max 2-3 Sätze mit konkreten Zahlen UND Nennung der relevanten Ebenen.
-Beispiel: "Kurs -4.2% in 5 Tagen, Support bei 245 gebrochen (Technik). Fed-Hawkishness belastet Tech-Bewertungen (Makro). Sektor-Rotation erkennbar: QQQ -2.1% vs. SPY -0.5% (Sektor)."
-
-[{"ticker":"AAPL","action":"sell","confidence":0.75,"reasoning":"Kurs -4.2% in 5 Tagen, Support bei 245 gebrochen. Fed-Hawkishness + Tech-Rotation verstärken den Abwärtsdruck.","targetPrice":240}]`;
-
+**BUY auch bei nur 1 Bedingung wenn:**
+- Kurs -12%+ unter 10d-Hoch UND Verluste verlangsamen sich (letzter Tag weniger Verlust als vorletzter) → Bodenbildung, Konfidenz max 0.62
+ 
+**SELL wenn 2+ zutreffen:**
+- ÜBERKAUFT (7+ Gewinntage/10) + Kurs nahe Resistance
+- Kurs unter 10d-MA + Momentum beschleunigt negativ (-1% → -2% → -3%)
+- Stark negative Unternehmens-News
+- CRV < 0.8 + fallender Trend 5+ Tage
+ 
+**HOLD wenn:**
+- Weder BUY noch SELL hat 2+ Bedingungen erfüllt
+- Seitwärts: <1.5% Schwankung in letzten 5 Tagen
+ 
+## KRITISCHE REGELN
+- ÜBERVERKAUFT ≠ SELL. Ein Asset das -15% in 10 Tagen gefallen ist, ist ein potentieller MEAN-REVERSION-BUY, nicht ein SELL.
+- Momentum-SELL nur wenn Trend BESCHLEUNIGT (Verluste werden täglich größer). Verlangsamung = mögliche Bodenbildung.
+- Rohstoffe/Minen (Gold, Kupfer, Öl): Höhere Volatilität normal. Erst bei -20%+ als kritisch werten.
+- Krypto: Korreliert mit Nasdaq. Höhere Schwellen: ±25% statt ±10%.
+- Diversifikation: Wenn alle BUY-Signale im selben Sektor → nur stärkstes Signal nehmen.
+ 
+## KONFIDENZ
+0.80+: Alle Ebenen einig. 0.65-0.79: Klarer Trend + CRV passt. 0.50-0.64: Gemischt. 0.35-0.49: Schwach.
+Jedes Asset einzeln bewerten. NICHT alle gleiche Konfidenz.
+ 
+## FORMAT
+JSON-Array. Kein Markdown. 2 Sätze Begründung mit Zahlen.
+[{"ticker":"FCX","action":"buy","confidence":0.72,"reasoning":"8/10 Verlusttage = überverkauft, Kurs -14% unter 10d-Hoch bei intakten Kupfer-Fundamentals. Mean-Reversion-Setup, CRV ~2.5.","targetPrice":42}]`;
+ 
 export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
   const prompt = buildPrompt(input);
-
+ 
   const response = await client.chat.completions.create({
     model: MODEL,
     max_tokens: 1024,
@@ -159,11 +93,10 @@ export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
       { role: 'user', content: prompt },
     ],
   });
-
+ 
   const text = response.choices[0]?.message?.content?.trim() ?? '';
-
+ 
   try {
-    // Strip potential markdown fences
     const clean = text.replace(/```json\s?/g, '').replace(/```/g, '').trim();
     return JSON.parse(clean) as Signal[];
   } catch {
@@ -171,10 +104,7 @@ export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
     return [];
   }
 }
-
-/**
- * Used by the backtest script for custom prompts
- */
+ 
 export async function chatCompletion(
   systemPrompt: string,
   userPrompt: string
@@ -190,40 +120,60 @@ export async function chatCompletion(
   });
   return response.choices[0]?.message?.content?.trim() ?? '';
 }
-
+ 
 function buildPrompt(input: AnalysisInput): string {
   const portfolioStr = input.portfolio
-    .map((p) => `${p.ticker}: Kauf ${p.buyPrice}€, Aktuell ${p.currentPrice}€, Menge ${p.quantity}`)
+    .map((p) => {
+      const pnl = ((p.currentPrice - p.buyPrice) / p.buyPrice * 100).toFixed(1);
+      return `${p.ticker}: Kauf ${p.buyPrice}€, Aktuell ${p.currentPrice}€ (${Number(pnl) >= 0 ? '+' : ''}${pnl}%), Menge ${p.quantity}`;
+    })
     .join('\n');
-
+ 
   const newsStr = input.news
     .slice(0, 20)
     .map((n) => `[${n.source}] ${n.title}`)
     .join('\n');
-
+ 
   const marketStr = input.marketData
     .map((m) => {
-      const trend =
-        m.prices.length > 1
-          ? m.prices[m.prices.length - 1] > m.prices[0]
-            ? '↑'
-            : '↓'
-          : '-';
-      return `${m.ticker}: ${m.changePct.toFixed(2)}% ${trend} (${m.prices.length}d Verlauf)`;
+      const prices = m.prices;
+      const len = prices.length;
+      if (len < 2) return `${m.ticker}: ${m.changePct.toFixed(2)}% (zu wenig Daten)`;
+ 
+      // Calculate RSI proxy
+      let lossDays = 0;
+      for (let i = Math.max(0, len - 10); i < len; i++) {
+        if (i > 0 && prices[i] < prices[i - 1]) lossDays++;
+      }
+      const last10 = Math.min(10, len - 1);
+      const rsiLabel = lossDays >= 7 ? 'ÜBERVERKAUFT' : lossDays <= 3 ? 'ÜBERKAUFT' : 'NEUTRAL';
+ 
+      // 10d high
+      const recent10 = prices.slice(-10);
+      const high10d = Math.max(...recent10);
+      const distFromHigh = ((prices[len - 1] - high10d) / high10d * 100).toFixed(1);
+ 
+      // 10d MA
+      const ma10 = recent10.reduce((a, b) => a + b, 0) / recent10.length;
+      const distFromMA = ((prices[len - 1] - ma10) / ma10 * 100).toFixed(1);
+ 
+      const trend = prices[len - 1] > prices[0] ? '↑' : '↓';
+ 
+      return `${m.ticker}: ${m.changePct.toFixed(2)}% ${trend} | ${lossDays}/${last10} Verlusttage (${rsiLabel}) | ${distFromHigh}% unter 10d-Hoch | MA10-Abstand: ${distFromMA}%`;
     })
     .join('\n');
-
+ 
   return `Analysiere mein Portfolio und gib Signale:
-
+ 
 ## Mein Portfolio
 ${portfolioStr}
-
+ 
 ## Aktuelle News-Schlagzeilen
-${newsStr}
-
-## Marktdaten & Trends
+${newsStr || 'Keine News verfügbar — entscheide auf Basis der Kursdaten.'}
+ 
+## Marktdaten (inkl. RSI-Proxy & MA10)
 ${marketStr}
-
-Gib für jede Position ein Signal (buy/sell/hold) mit Begründung.
-Berücksichtige: Langzeittrend, News-Sentiment, Risiko, aktuelle Marktlage.`;
+ 
+Gib für jede Position ein Signal (buy/sell/hold) mit Begründung. Beachte: Überverkauft = potentieller Mean-Reversion-BUY, nicht automatisch SELL.`;
 }
+ 
