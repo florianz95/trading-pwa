@@ -95,13 +95,14 @@ export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
   });
  
   const text = response.choices[0]?.message?.content?.trim() ?? '';
- 
+  console.log('LLM raw response:', text.slice(0, 500));
+
   try {
     const clean = text.replace(/```json\s?/g, '').replace(/```/g, '').trim();
     return JSON.parse(clean) as Signal[];
   } catch {
     console.error('Failed to parse LLM response:', text);
-    return [];
+    return [{ ticker: '__debug__', action: 'hold', confidence: 0, reasoning: text.slice(0, 300) }] as any;
   }
 }
  
