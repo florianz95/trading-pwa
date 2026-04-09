@@ -20,35 +20,27 @@ export default function DashboardPage() {
   const [pushEnabled, setPushEnabled] = useState(false);
   const [selectedPosition, setSelectedPosition] = useState<any>(null);
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
-  const [authMessage, setAuthMessage] = useState('');
+  const [authError, setAuthError] = useState('');
 
-  // Check auth on mount
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      if (data.user) {
-        setUser(data.user);
-      } else {
-        setLoading(false);
-      }
+      if (data.user) setUser(data.user);
+      else setLoading(false);
     });
-
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
     });
-
     return () => { listener.subscription.unsubscribe(); };
   }, []);
 
-  // Load data when user is set
   const loadData = useCallback(async () => {
     if (!user) return;
-
     const [signalsRes, positionsRes] = await Promise.all([
       supabase.from('signals').select('*').order('created_at', { ascending: false }).limit(10),
       supabase.from('positions').select('*').eq('user_id', user.id),
     ]);
-
     setSignals(signalsRes.data ?? []);
     setPositions(positionsRes.data ?? []);
 
@@ -62,27 +54,19 @@ export default function DashboardPage() {
         setQuotes(map);
       } catch {}
     }
-
     setLoading(false);
   }, [user]);
 
-  useEffect(() => {
-    if (user) loadData();
-  }, [user, loadData]);
+  useEffect(() => { if (user) loadData(); }, [user, loadData]);
 
-  // Magic Link Login
   const handleLogin = async () => {
     setAuthLoading(true);
-    const { error } = await supabase.auth.signInWithOtp({ email });
-    if (error) {
-      setAuthMessage('Fehler: ' + error.message);
-    } else {
-      setAuthMessage('Magic Link gesendet! Prüfe deine E-Mails.');
-    }
+    setAuthError('');
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) setAuthError(error.message);
     setAuthLoading(false);
   };
 
-  // Push subscription
   const enablePush = async () => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
       alert('Push wird auf diesem Gerät nicht unterstützt.');
@@ -101,39 +85,43 @@ export default function DashboardPage() {
       });
       setPushEnabled(true);
     } catch (err) {
-      console.error('Push subscription failed:', err);
+      console.error('Push failed:', err);
     }
   };
 
-  // ── Login Screen ──
+  // ── Login ──
   if (!user) {
     return (
       <div className="max-w-sm mx-auto px-4 py-20 text-center">
         <h1 className="text-2xl font-semibold mb-2">Trading Advisor</h1>
-        <p className="text-sm text-gray-400 mb-8">Melde dich an um fortzufahren</p>
+        <p className="text-sm text-gray-400 mb-8">Login</p>
         <input
           type="email"
-          placeholder="deine@email.de"
+          placeholder="E-Mail"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm mb-3 focus:border-blue-500 focus:outline-none"
+        />
+        <input
+          type="password"
+          placeholder="Passwort"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
           className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm mb-3 focus:border-blue-500 focus:outline-none"
         />
         <button
           onClick={handleLogin}
-          disabled={authLoading || !email}
+          disabled={authLoading || !email || !password}
           className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm py-3 rounded-lg transition-colors"
         >
-          {authLoading ? 'Sende...' : 'Magic Link senden'}
+          {authLoading ? 'Anmelden...' : 'Anmelden'}
         </button>
-        {authMessage && (
-          <p className="text-sm text-gray-400 mt-4">{authMessage}</p>
-        )}
+        {authError && <p className="text-sm text-red-400 mt-4">{authError}</p>}
       </div>
     );
   }
 
-  // ── Loading ──
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -142,7 +130,6 @@ export default function DashboardPage() {
     );
   }
 
-  // ── Dashboard ──
   const totalInvested = positions.reduce((sum, p) => sum + p.buy_price * p.quantity + p.order_fee, 0);
   const totalCurrent = positions.reduce((sum, p) => {
     const q = quotes[p.ticker];
