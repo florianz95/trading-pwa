@@ -60,10 +60,12 @@ export async function GET(req: NextRequest) {
 
       // 4. News archivieren für Backtesting
       for (const n of news.slice(0, 30)) {
-        await supabaseAdmin.from('news_archive').upsert(
-          { title: n.title, source: n.source, link: n.link, pub_date: n.pubDate || new Date().toISOString(), snippet: n.snippet },
-          { onConflict: 'link' }
-        ).catch(() => {});
+        try {
+          await supabaseAdmin.from('news_archive').upsert(
+            { title: n.title, source: n.source, link: n.link, pub_date: n.pubDate || new Date().toISOString(), snippet: n.snippet },
+            { onConflict: 'link' }
+          );
+        } catch {}
       }
 
       // 5. KI-Analyse via OpenRouter
