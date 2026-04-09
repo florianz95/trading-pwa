@@ -70,7 +70,6 @@ function DashboardContent() {
 
   const loadData = useCallback(async () => {
     if (!user) return;
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const [signalsRes, positionsRes, pendingRes] = await Promise.all([
       supabase.from('signals').select('*').order('created_at', { ascending: false }).limit(30),
       supabase.from('positions').select('*').eq('user_id', user.id),
@@ -78,8 +77,7 @@ function DashboardContent() {
         .select('*')
         .eq('user_id', user.id)
         .eq('status', 'pending')
-        .gte('created_at', since)
-        .order('confidence', { ascending: false }),
+        .order('created_at', { ascending: false }),
     ]);
     setSignals(signalsRes.data ?? []);
     setPositions(positionsRes.data ?? []);
