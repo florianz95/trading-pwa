@@ -78,15 +78,15 @@ Berechne aus den Kursdaten:
 Jedes Asset einzeln bewerten. NICHT alle gleiche Konfidenz.
  
 ## FORMAT
-JSON-Array. Kein Markdown. 2 Sätze Begründung mit Zahlen.
-[{"ticker":"FCX","action":"buy","confidence":0.72,"reasoning":"8/10 Verlusttage = überverkauft, Kurs -14% unter 10d-Hoch bei intakten Kupfer-Fundamentals. Mean-Reversion-Setup, CRV ~2.5.","targetPrice":42}]`;
+JSON-Array. Kein Markdown. Begründung max. 1 Satz mit den wichtigsten Zahlen. Kein targetPrice wenn nicht sicher.
+[{"ticker":"FCX","action":"buy","confidence":0.72,"reasoning":"8/10 Verlusttage, -14% unter 10d-Hoch, CRV ~2.5."}]`;
  
 export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
   const prompt = buildPrompt(input);
  
   const response = await client.chat.completions.create({
     model: MODEL,
-    max_tokens: 2048,
+    max_tokens: 4096,
     temperature: 0.3,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
