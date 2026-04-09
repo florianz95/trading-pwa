@@ -12,7 +12,10 @@ export async function GET(req: NextRequest) {
   const querySecret = req.nextUrl.searchParams.get('secret');
   const validSecret = process.env.CRON_SECRET;
   if (authHeader !== `Bearer ${validSecret}` && querySecret !== validSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({
+      error: 'Unauthorized',
+      debug: { received: querySecret, envSet: !!validSecret }
+    }, { status: 401 });
   }
 
   try {
