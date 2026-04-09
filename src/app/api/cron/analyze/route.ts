@@ -97,9 +97,40 @@ export async function GET(req: NextRequest) {
         marketData: histories,
       });
 
-      // 6. Signale speichern (mit user_id + status)
+      // 6. Signale filtern + speichern
+      // Guard rails aus Backtest-Analyse:
+      // - Kein BUY wenn bereits 2+ offene Positionen in diesem Ticker vorhanden
+      // - Kein SELL-Signal wenn Position erst in den letzten 3 Tagen gekauft (Mindesthaltedauer)
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+
+      // Bestehende Positionen aus DB für Guard-Rail-Check
+      const { data: existingBuySignals } = await supabaseAdmin
+        .from('signals')
+        .select('ticker')
+        .eq('user_id', user.user_id)
+        .eq('signal_type', 'buy')
+        .eq('status', 'accepted');
+
+      const { data: recentBuys } = await supabaseAdmin
+        .from('signals')
+        .select('ticker')
+        .eq('user_id', user.user_id)
+        .eq('signal_type', 'buy')
+        .gte('created_at', threeDaysAgo);
+
+      const acceptedBuyCounts: Record<string, number> = {};
+      for (const s of existingBuySignals ?? []) {
+        acceptedBuyCounts[s.ticker] = (acceptedBuyCounts[s.ticker] ?? 0) + 1;
+      }
+      const recentBuyTickers = new Set((recentBuys ?? []).map((s: any) => s.ticker));
+
       const savedSignals: { id: string; ticker: string; action: string; confidence: number; reasoning: string }[] = [];
       for (const sig of signals) {
+        // Guard: max 2 akzeptierte Käufe pro Ticker
+        if (sig.action === 'buy' && (acceptedBuyCounts[sig.ticker] ?? 0) >= 2) continue;
+        // Guard: kein Verkauf wenn in den letzten 3 Tagen gekauft (Mindesthaltedauer)
+        if (sig.action === 'sell' && recentBuyTickers.has(sig.ticker)) continue;
+
         const { data: saved } = await supabaseAdmin.from('signals').insert({
           ticker: sig.ticker, signal_type: sig.action, confidence: sig.confidence,
           reasoning: sig.reasoning, current_price: quotes.find((q) => q.ticker === sig.ticker)?.price,
