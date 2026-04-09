@@ -9,7 +9,7 @@ const client = new OpenAI({
   },
 });
 
-const MODEL = process.env.LLM_MODEL ?? 'anthropic/claude-3.5-haiku';
+const MODEL = process.env.LLM_MODEL ?? 'google/gemini-2.0-flash-exp:free';
 
 interface AnalysisInput {
   portfolio: { ticker: string; buyPrice: number; quantity: number; currentPrice: number }[];
@@ -95,14 +95,12 @@ export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
   });
  
   const text = response.choices[0]?.message?.content?.trim() ?? '';
-  console.log('LLM raw response:', text.slice(0, 500));
 
   try {
     const clean = text.replace(/```json\s?/g, '').replace(/```/g, '').trim();
     return JSON.parse(clean) as Signal[];
   } catch {
-    console.error('Failed to parse LLM response:', text);
-    return [{ ticker: '__debug__', action: 'hold', confidence: 0, reasoning: text.slice(0, 300) }] as any;
+    return [{ ticker: '__debug__', action: 'hold', confidence: 0, reasoning: `PARSE_FAILED: ${text.slice(0, 400)}` }] as any;
   }
 }
  
