@@ -120,26 +120,34 @@ export default function PortfolioPage() {
         step={type === 'number' ? '0.0001' : undefined}
         value={form[key] as string | number}
         onChange={(e) => setForm({ ...form, [key]: type === 'number' ? Number(e.target.value) : e.target.value })}
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+        className="w-full bg-gray-900 border border-gray-800 rounded-xl px-3 py-2.5 text-sm focus:border-gray-600 focus:outline-none"
       />
     </div>
   );
 
-  if (loading) return <div className="flex items-center justify-center min-h-screen text-gray-400">Laden...</div>;
+  if (loading) return <div className="flex items-center justify-center min-h-screen bg-black text-gray-600 text-sm animate-pulse">Wird geladen…</div>;
 
   return (
-    <div className="max-w-lg mx-auto px-4 py-6 pb-24">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-semibold">Portfolio</h1>
-          <p className="text-sm text-gray-400">{positions.length} Positionen</p>
+    <div className="bg-black min-h-screen text-white">
+      {/* Fixed header */}
+      <header className="fixed top-0 left-0 right-0 z-30 bg-black/95 backdrop-blur-sm border-b border-gray-900">
+        <div className="max-w-lg mx-auto flex items-center gap-3 px-4 h-14">
+          <a href="/dashboard" className="w-9 h-9 flex items-center justify-center rounded-full text-gray-400 hover:text-white transition-colors">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6"/>
+            </svg>
+          </a>
+          <h1 className="font-semibold text-base">Portfolio</h1>
+          <span className="text-xs text-gray-600 ml-auto">{positions.length} Positionen</span>
         </div>
-        <a href="/dashboard" className="text-xs text-blue-400">← Dashboard</a>
-      </div>
+      </header>
+
+      <div className="max-w-lg mx-auto px-4 pt-18 pb-10">
+        <div className="h-4" />
 
       {/* Form */}
-      <div className="bg-gray-900 rounded-xl p-4 mb-6">
-        <h2 className="text-sm font-medium mb-3">{editing ? 'Position bearbeiten' : 'Neue Position'}</h2>
+      <div className="bg-gray-900 rounded-2xl p-4 mb-5">
+        <h2 className="text-sm font-semibold mb-3">{editing ? 'Position bearbeiten' : 'Position hinzufügen'}</h2>
         <div className="grid grid-cols-2 gap-3">
           {/* Ticker Autocomplete */}
           <div className="col-span-2 relative" ref={suggestionsRef}>
@@ -152,7 +160,7 @@ export default function PortfolioPage() {
                 setTickerQuery(e.target.value);
                 setForm((f) => ({ ...f, ticker: e.target.value.toUpperCase(), name: '' }));
               }}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              className="w-full bg-gray-900 border border-gray-800 rounded-xl px-3 py-2.5 text-sm focus:border-gray-600 focus:outline-none"
             />
             {suggestions.length > 0 && (
               <div className="absolute z-10 left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-lg overflow-hidden shadow-xl">
@@ -179,12 +187,12 @@ export default function PortfolioPage() {
           {field('Kaufdatum', 'buy_date', 'date')}
           {field('Ordergebühr (€)', 'order_fee', 'number')}
         </div>
-        <div className="flex gap-2 mt-3">
-          <button onClick={save} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-sm py-2 rounded-lg transition-colors">
+        <div className="flex gap-2 mt-4">
+          <button onClick={save} className="flex-1 bg-white text-black text-sm font-semibold py-3 rounded-xl transition-opacity hover:opacity-90">
             {editing ? 'Speichern' : 'Hinzufügen'}
           </button>
           {editing && (
-            <button onClick={() => { setForm(emptyPosition); setEditing(null); }} className="px-4 text-sm text-gray-400 hover:text-gray-200">
+            <button onClick={() => { setForm(emptyPosition); setEditing(null); }} className="px-5 text-sm text-gray-500 bg-gray-800 rounded-xl hover:bg-gray-700 transition-colors">
               Abbrechen
             </button>
           )}
@@ -194,20 +202,36 @@ export default function PortfolioPage() {
       {/* List */}
       <div className="space-y-2">
         {positions.map((p) => (
-          <div key={p.id} className="bg-gray-900 rounded-xl p-3 flex items-center justify-between">
-            <div>
-              <span className="font-medium text-sm">{p.ticker}</span>
-              <span className="text-gray-500 text-xs ml-2">{p.name}</span>
-              <p className="text-[11px] text-gray-500 mt-0.5">
-                {p.quantity}× @ {p.buy_price.toFixed(2)}€ · Gebühr {p.order_fee}€ · {p.buy_date}
+          <div key={p.id} className="bg-gray-900 rounded-2xl px-4 py-3 flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-sm">{p.ticker}</span>
+                <span className="text-gray-600 text-xs truncate">{p.name}</span>
+              </div>
+              <p className="text-[11px] text-gray-600 mt-0.5">
+                {p.quantity}× @ {p.buy_price.toFixed(2)}€ · {p.buy_date}
               </p>
             </div>
-            <div className="flex gap-2">
-              <button onClick={() => startEdit(p)} className="text-xs text-blue-400 hover:text-blue-300">Bearb.</button>
-              <button onClick={() => remove(p.id!)} className="text-xs text-red-400 hover:text-red-300">Löschen</button>
-            </div>
+            <button
+              onClick={() => startEdit(p)}
+              className="w-9 h-9 flex items-center justify-center rounded-full text-gray-600 hover:text-blue-400 hover:bg-blue-950/30 transition-colors shrink-0"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+            </button>
+            <button
+              onClick={() => remove(p.id!)}
+              className="w-9 h-9 flex items-center justify-center rounded-full text-gray-600 hover:text-red-400 hover:bg-red-950/30 transition-colors shrink-0"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>
+              </svg>
+            </button>
           </div>
         ))}
+      </div>
       </div>
     </div>
   );

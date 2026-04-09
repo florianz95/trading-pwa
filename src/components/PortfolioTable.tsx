@@ -44,28 +44,40 @@ export default function PortfolioTable({
         const invested = p.buy_price * p.quantity;
         const current = currentPrice * p.quantity;
         const profitPct = invested > 0 ? ((current - invested) / invested) * 100 : 0;
+        const profitAbs = current - invested;
         const isUp = profitPct >= 0;
 
         return (
           <button
             key={p.id}
             onClick={() => onSelect(p)}
-            className="w-full text-left bg-gray-900 hover:bg-gray-800 transition-colors rounded-xl p-3 flex items-center justify-between"
+            className="w-full text-left bg-gray-900 active:bg-gray-800 transition-colors rounded-2xl px-4 py-3"
           >
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-sm">{p.ticker}</span>
-                <span className="text-[11px] text-gray-500">{p.name}</span>
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-sm">{p.ticker}</span>
+                  {q?.change !== undefined && (
+                    <span className={`text-[10px] font-medium ${q.change >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                      {q.change >= 0 ? '+' : ''}{q.change.toFixed(2)}%
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-gray-600 mt-0.5 truncate">
+                  {p.quantity.toFixed(4)}× · Ø {p.buy_price.toFixed(2)}€
+                </p>
               </div>
-              <p className="text-[11px] text-gray-500 mt-0.5">
-                {p.quantity}× @ {p.buy_price.toFixed(2)}€
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="text-sm font-medium">{current.toFixed(2)}€</p>
-              <p className={`text-xs ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
-                {isUp ? '+' : ''}{profitPct.toFixed(2)}%
-              </p>
+              <div className="text-right ml-4 shrink-0">
+                <p className="text-sm font-semibold tabular-nums">
+                  {current.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })}
+                </p>
+                <p className={`text-xs font-medium tabular-nums ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {isUp ? '+' : ''}{profitPct.toFixed(1)}%
+                  <span className="text-[10px] text-gray-600 ml-1">
+                    ({isUp ? '+' : ''}{profitAbs.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })})
+                  </span>
+                </p>
+              </div>
             </div>
           </button>
         );

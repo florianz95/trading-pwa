@@ -3,7 +3,6 @@
 import { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from '@supabase/supabase-js';
-import SignalCard from '@/components/SignalCard';
 import PortfolioTable from '@/components/PortfolioTable';
 import ProfitCalculator from '@/components/ProfitCalculator';
 
@@ -12,7 +11,25 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+type Tab = 'today' | 'history' | 'portfolio';
+
+const TYPE_CFG = {
+  buy:  { label: 'Kaufen',   bg: 'bg-emerald-950/40', border: 'border-emerald-800/60', badge: 'bg-emerald-950 text-emerald-400', btn: 'bg-emerald-700 hover:bg-emerald-600 text-white' },
+  sell: { label: 'Verkaufen', bg: 'bg-red-950/35',     border: 'border-red-800/55',     badge: 'bg-red-950 text-red-400',         btn: 'bg-red-700 hover:bg-red-600 text-white' },
+  hold: { label: 'Halten',   bg: 'bg-amber-950/25',   border: 'border-amber-800/40',   badge: 'bg-amber-950 text-amber-400',     btn: 'bg-gray-800 hover:bg-gray-700 text-amber-300 border border-amber-800/40' },
+};
+
+function timeAgo(dateStr: string) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const h = Math.floor(diff / 3600000);
+  if (h < 1) return 'Gerade';
+  if (h < 24) return `vor ${h}h`;
+  const d = Math.floor(h / 24);
+  return `vor ${d}d`;
+}
+
 function DashboardContent() {
+  const [tab, setTab] = useState<Tab>('today');
   const [signals, setSignals] = useState<any[]>([]);
   const [pendingSignals, setPendingSignals] = useState<any[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
@@ -26,18 +43,18 @@ function DashboardContent() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  // Buy modal
   const [acceptingBuy, setAcceptingBuy] = useState<any>(null);
   const [investAmount, setInvestAmount] = useState('100');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [toast, setToast] = useState('');
+  const [expandedSignal, setExpandedSignal] = useState<string | null>(null);
 
   const searchParams = useSearchParams();
   const router = useRouter();
 
   const showToast = (msg: string) => {
     setToast(msg);
-    setTimeout(() => setToast(''), 4000);
+    setTimeout(() => setToast(''), 3500);
   };
 
   useEffect(() => {
@@ -55,7 +72,7 @@ function DashboardContent() {
     if (!user) return;
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const [signalsRes, positionsRes, pendingRes] = await Promise.all([
-      supabase.from('signals').select('*').order('created_at', { ascending: false }).limit(20),
+      supabase.from('signals').select('*').order('created_at', { ascending: false }).limit(30),
       supabase.from('positions').select('*').eq('user_id', user.id),
       supabase.from('signals')
         .select('*')
@@ -66,13 +83,12 @@ function DashboardContent() {
     ]);
     setSignals(signalsRes.data ?? []);
     setPositions(positionsRes.data ?? []);
-    // Sort: sell first, then buy, then hold
     const order: Record<string, number> = { sell: 0, buy: 1, hold: 2 };
-    const sorted = (pendingRes.data ?? []).sort((a: any, b: any) =>
-      (order[a.signal_type] ?? 3) - (order[b.signal_type] ?? 3)
+    setPendingSignals(
+      (pendingRes.data ?? []).sort((a: any, b: any) =>
+        (order[a.signal_type] ?? 3) - (order[b.signal_type] ?? 3)
+      )
     );
-    setPendingSignals(sorted);
-
     const tickers = [...new Set((positionsRes.data ?? []).map((p: any) => p.ticker))];
     if (tickers.length > 0) {
       try {
@@ -91,31 +107,26 @@ function DashboardContent() {
   useEffect(() => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
     navigator.serviceWorker.ready.then((reg) => {
-      reg.pushManager.getSubscription().then((sub) => {
-        if (sub) setPushEnabled(true);
-      });
+      reg.pushManager.getSubscription().then((sub) => { if (sub) setPushEnabled(true); });
     });
   }, []);
 
-  // Handle notification click params
   useEffect(() => {
     if (!user || loading) return;
     const signalId = searchParams.get('signal');
     const action = searchParams.get('action');
     if (!signalId) return;
-
     if (action === 'accept') {
       supabase.from('signals').select('*').eq('id', signalId).single().then(({ data }) => {
         if (data && data.signal_type === 'buy') {
           setAcceptingBuy(data);
-          setInvestAmount(String(data.target_price ?? 100));
+          setInvestAmount(String(data.target_price > 0 ? data.target_price : 100));
           router.replace('/dashboard', { scroll: false });
         }
       });
     } else if (action === 'decline') {
       fetch(`/api/signals/${signalId}/decline`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: user.id }),
       }).then(() => {
         setPendingSignals((prev) => prev.filter((s) => s.id !== signalId));
@@ -124,42 +135,34 @@ function DashboardContent() {
     }
   }, [user, loading, searchParams, router]);
 
-  // ── Accept BUY ──────────────────────────────────────────────────────────
   const handleBuy = async () => {
     if (!acceptingBuy || !user) return;
     setActionLoading(acceptingBuy.id);
     const res = await fetch(`/api/signals/${acceptingBuy.id}/accept`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: user.id, amount: parseFloat(investAmount) }),
     });
     const data = await res.json();
     setActionLoading(null);
     if (res.ok) {
       setAcceptingBuy(null);
-      showToast(`Gekauft: ${acceptingBuy.ticker} — ${data.quantity?.toFixed(4)} Anteile @ ${data.buyPrice?.toFixed(2)}€`);
+      showToast(`Gekauft: ${acceptingBuy.ticker} · ${data.quantity?.toFixed(4)} Anteile`);
       loadData();
     } else {
       showToast(`Fehler: ${data.error}`);
     }
   };
 
-  // ── Accept SELL / HOLD ───────────────────────────────────────────────────
   const handleAccept = async (sig: any) => {
     if (!user) return;
     setActionLoading(sig.id);
     const res = await fetch(`/api/signals/${sig.id}/accept`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: user.id }),
     });
     setActionLoading(null);
     if (res.ok) {
-      if (sig.signal_type === 'sell') {
-        showToast(`${sig.ticker} aus Portfolio entfernt.`);
-      } else {
-        showToast(`${sig.ticker} — Empfehlung bestätigt.`);
-      }
+      showToast(sig.signal_type === 'sell' ? `${sig.ticker} verkauft & aus Portfolio entfernt.` : `${sig.ticker} · Bestätigt`);
       setPendingSignals((prev) => prev.filter((s) => s.id !== sig.id));
       loadData();
     } else {
@@ -170,8 +173,7 @@ function DashboardContent() {
   const handleDecline = async (signalId: string) => {
     if (!user) return;
     await fetch(`/api/signals/${signalId}/decline`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: user.id }),
     });
     setPendingSignals((prev) => prev.filter((s) => s.id !== signalId));
@@ -192,7 +194,7 @@ function DashboardContent() {
 
   const enablePush = async () => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-      alert('Push wird auf diesem Gerät nicht unterstützt.');
+      alert('Push nicht unterstützt.');
       return;
     }
     try {
@@ -205,11 +207,11 @@ function DashboardContent() {
         });
       }
       await fetch('/api/push/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subscription: sub.toJSON(), userId: user.id }),
       });
       setPushEnabled(true);
+      showToast('Benachrichtigungen aktiviert');
     } catch (err) {
       console.error('Push failed:', err);
     }
@@ -218,32 +220,32 @@ function DashboardContent() {
   // ── Login ────────────────────────────────────────────────────────────────
   if (!user) {
     return (
-      <div className="max-w-sm mx-auto px-4 py-20 text-center">
-        <h1 className="text-2xl font-semibold mb-1">Investmentberater</h1>
-        <p className="text-sm text-gray-500 mb-8">Dein persönlicher KI-Anlageberater</p>
-        <input
-          type="email"
-          placeholder="E-Mail"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm mb-3 focus:border-blue-500 focus:outline-none"
-        />
-        <input
-          type="password"
-          placeholder="Passwort"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
-          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm mb-3 focus:border-blue-500 focus:outline-none"
-        />
-        <button
-          onClick={handleLogin}
-          disabled={authLoading || !email || !password}
-          className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm py-3 rounded-lg transition-colors"
-        >
-          {authLoading ? 'Anmelden...' : 'Anmelden'}
-        </button>
-        {authError && <p className="text-sm text-red-400 mt-4">{authError}</p>}
+      <div className="max-w-xs mx-auto px-6 flex flex-col justify-center min-h-screen">
+        <div className="mb-10">
+          <h1 className="text-2xl font-bold mb-1">Investmentberater</h1>
+          <p className="text-sm text-gray-500">KI-gestützter Anlageberater</p>
+        </div>
+        <div className="space-y-3">
+          <input
+            type="email" placeholder="E-Mail" value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-3.5 text-sm focus:border-gray-600 focus:outline-none"
+          />
+          <input
+            type="password" placeholder="Passwort" value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+            className="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-3.5 text-sm focus:border-gray-600 focus:outline-none"
+          />
+          <button
+            onClick={handleLogin}
+            disabled={authLoading || !email || !password}
+            className="w-full bg-white text-black text-sm font-semibold py-3.5 rounded-xl disabled:opacity-40 transition-opacity"
+          >
+            {authLoading ? 'Anmelden...' : 'Anmelden'}
+          </button>
+        </div>
+        {authError && <p className="text-xs text-red-400 mt-4 text-center">{authError}</p>}
       </div>
     );
   }
@@ -251,230 +253,322 @@ function DashboardContent() {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-pulse text-gray-400">Lade Berater...</div>
+        <div className="text-gray-600 text-sm animate-pulse">Analyse wird geladen…</div>
       </div>
     );
   }
 
-  const totalInvested = positions.reduce((sum, p) => sum + p.buy_price * p.quantity + p.order_fee, 0);
+  const totalInvested = positions.reduce((sum, p) => sum + p.buy_price * p.quantity + (p.order_fee ?? 0), 0);
   const totalCurrent = positions.reduce((sum, p) => {
     const q = quotes[p.ticker];
     return sum + (q ? q.price * p.quantity : p.buy_price * p.quantity);
   }, 0);
   const totalProfitPct = totalInvested > 0 ? ((totalCurrent - totalInvested) / totalInvested) * 100 : 0;
   const totalProfitAbs = totalCurrent - totalInvested;
-
-  const buySigs = pendingSignals.filter((s) => s.signal_type === 'buy');
-  const sellSigs = pendingSignals.filter((s) => s.signal_type === 'sell');
-  const holdSigs = pendingSignals.filter((s) => s.signal_type === 'hold');
+  const historySignals = signals.filter((s) => s.status !== 'pending');
 
   return (
-    <div className="max-w-lg mx-auto px-4 py-6 pb-24">
+    <div className="bg-black min-h-screen text-white">
 
       {/* Toast */}
       {toast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm shadow-xl max-w-sm w-full text-center">
-          {toast}
+        <div className="fixed top-4 left-4 right-4 z-50 max-w-sm mx-auto">
+          <div className="bg-gray-800 border border-gray-700 rounded-2xl px-4 py-3 text-sm text-center shadow-2xl">
+            {toast}
+          </div>
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-semibold">Investmentberater</h1>
-          <p className="text-xs text-gray-500">KI-Analyse · 3× täglich · 300–500€/Monat</p>
+      {/* ── Fixed Header ───────────────────────────────────────────────────── */}
+      <header className="fixed top-0 left-0 right-0 z-30 bg-black/95 backdrop-blur-sm border-b border-gray-900">
+        <div className="max-w-lg mx-auto flex items-center justify-between px-4 h-14">
+          <span className="font-semibold text-base">Investmentberater</span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={enablePush}
+              title={pushEnabled ? 'Benachrichtigungen aktiv' : 'Benachrichtigungen aktivieren'}
+              className={`w-9 h-9 flex items-center justify-center rounded-full transition-colors ${
+                pushEnabled ? 'text-emerald-400' : 'text-gray-600 hover:text-gray-400'
+              }`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                {pushEnabled && <circle cx="18" cy="5" r="3" fill="currentColor" stroke="none"/>}
+              </svg>
+            </button>
+            <button
+              onClick={() => supabase.auth.signOut().then(() => setUser(null))}
+              className="w-9 h-9 flex items-center justify-center rounded-full text-gray-600 hover:text-gray-400 transition-colors"
+              title="Abmelden"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={enablePush}
-            className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-              pushEnabled
-                ? 'border-emerald-700 text-emerald-400 bg-emerald-950/40'
-                : 'border-gray-700 text-gray-500 hover:border-gray-500'
-            }`}
-          >
-            {pushEnabled ? '● Benachricht.' : 'Benachricht.'}
-          </button>
-          <button
-            onClick={() => supabase.auth.signOut().then(() => setUser(null))}
-            className="text-xs text-gray-600 hover:text-gray-400"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
+      </header>
 
-      {/* Portfolio Summary */}
-      <div className="grid grid-cols-3 gap-3 mb-6">
-        <div className="bg-gray-900 rounded-xl p-3">
-          <p className="text-[11px] text-gray-500 uppercase tracking-wider">Investiert</p>
-          <p className="text-base font-medium mt-1">{totalInvested.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}</p>
-        </div>
-        <div className="bg-gray-900 rounded-xl p-3">
-          <p className="text-[11px] text-gray-500 uppercase tracking-wider">Aktuell</p>
-          <p className="text-base font-medium mt-1">{totalCurrent.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}</p>
-        </div>
-        <div className="bg-gray-900 rounded-xl p-3">
-          <p className="text-[11px] text-gray-500 uppercase tracking-wider">Rendite</p>
-          <p className={`text-base font-medium mt-1 ${totalProfitPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {totalProfitPct >= 0 ? '+' : ''}{totalProfitPct.toFixed(1)}%
-          </p>
-          {totalInvested > 0 && (
-            <p className={`text-[11px] mt-0.5 ${totalProfitAbs >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-              {totalProfitAbs >= 0 ? '+' : ''}{totalProfitAbs.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}
+      {/* ── Scrollable Content ─────────────────────────────────────────────── */}
+      <div className="pt-14 pb-20 max-w-lg mx-auto px-4">
+
+        {/* Portfolio Summary */}
+        <div className="grid grid-cols-3 gap-2.5 pt-4 pb-5">
+          <div className="bg-gray-900 rounded-2xl px-3 py-3">
+            <p className="text-[10px] text-gray-600 uppercase tracking-wider font-medium">Investiert</p>
+            <p className="text-sm font-semibold mt-1 tabular-nums">
+              {totalInvested.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })}
             </p>
-          )}
+          </div>
+          <div className="bg-gray-900 rounded-2xl px-3 py-3">
+            <p className="text-[10px] text-gray-600 uppercase tracking-wider font-medium">Aktuell</p>
+            <p className="text-sm font-semibold mt-1 tabular-nums">
+              {totalCurrent.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })}
+            </p>
+          </div>
+          <div className="bg-gray-900 rounded-2xl px-3 py-3">
+            <p className="text-[10px] text-gray-600 uppercase tracking-wider font-medium">Rendite</p>
+            <p className={`text-sm font-semibold mt-1 tabular-nums ${totalProfitPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {totalProfitPct >= 0 ? '+' : ''}{totalProfitPct.toFixed(1)}%
+            </p>
+            {totalInvested > 0 && (
+              <p className={`text-[10px] ${totalProfitAbs >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                {totalProfitAbs >= 0 ? '+' : ''}{totalProfitAbs.toLocaleString('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })}
+              </p>
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* Heutige Empfehlungen */}
-      {pendingSignals.length > 0 && (
-        <div className="mb-6">
-          <h2 className="text-sm font-medium text-gray-300 mb-3">
-            Empfehlungen heute
-            <span className="ml-2 text-xs text-gray-600 font-normal">({pendingSignals.length})</span>
-          </h2>
-
-          <div className="space-y-3">
-            {/* SELL signals — highest urgency */}
-            {sellSigs.map((sig) => {
-              const pos = positions.find((p) => p.ticker === sig.ticker);
-              const curPrice = quotes[sig.ticker]?.price ?? sig.current_price;
-              const pnlPct = pos ? ((curPrice - pos.buy_price) / pos.buy_price * 100) : null;
-              return (
-                <div key={sig.id} className="bg-red-950/30 border border-red-800/60 rounded-xl p-4">
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-red-950 text-red-400">Verkaufen</span>
-                      <span className="font-semibold">{sig.ticker}</span>
-                      {pnlPct !== null && (
-                        <span className={`text-xs font-medium ${pnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-xs text-gray-500">{Math.round(sig.confidence * 100)}%</span>
-                  </div>
-                  <p className="text-xs text-gray-400 mb-3 line-clamp-3">{sig.reasoning}</p>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleAccept(sig)}
-                      disabled={actionLoading === sig.id}
-                      className="flex-1 bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-xs font-medium py-2 rounded-lg transition-colors"
-                    >
-                      {actionLoading === sig.id ? '...' : pnlPct !== null ? `Verkaufen (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)` : 'Verkaufen'}
-                    </button>
-                    <button
-                      onClick={() => handleDecline(sig.id)}
-                      className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium py-2 rounded-lg transition-colors"
-                    >
-                      Behalten
-                    </button>
-                  </div>
+        {/* ── Tab: Heute ───────────────────────────────────────────────────── */}
+        {tab === 'today' && (
+          <div>
+            {pendingSignals.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="w-14 h-14 rounded-full bg-gray-900 flex items-center justify-center mb-4">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-gray-600">
+                    <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                  </svg>
                 </div>
-              );
-            })}
-
-            {/* BUY signals */}
-            {buySigs.map((sig) => (
-              <div key={sig.id} className="bg-emerald-950/25 border border-emerald-800/50 rounded-xl p-4">
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400">Kaufen</span>
-                    <span className="font-semibold">{sig.ticker}</span>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs text-gray-500">{Math.round(sig.confidence * 100)}% Überzeugung</span>
-                    {sig.target_price > 0 && (
-                      <p className="text-xs text-emerald-500 font-medium">{sig.target_price}€ empfohlen</p>
-                    )}
-                  </div>
-                </div>
-                <p className="text-xs text-gray-400 mb-3 line-clamp-3">{sig.reasoning}</p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => {
-                      setAcceptingBuy(sig);
-                      setInvestAmount(String(sig.target_price > 0 ? sig.target_price : 100));
-                    }}
-                    className="flex-1 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-medium py-2 rounded-lg transition-colors"
-                  >
-                    Kaufen →
-                  </button>
-                  <button
-                    onClick={() => handleDecline(sig.id)}
-                    className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium py-2 rounded-lg transition-colors"
-                  >
-                    Ignorieren
-                  </button>
-                </div>
+                <p className="text-sm text-gray-500">Keine neuen Empfehlungen</p>
+                <p className="text-xs text-gray-700 mt-1">Nächste Analyse in wenigen Stunden</p>
               </div>
-            ))}
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-gray-600 mb-1">{pendingSignals.length} Empfehlung{pendingSignals.length !== 1 ? 'en' : ''} heute</p>
+                {pendingSignals.map((sig) => {
+                  const cfg = TYPE_CFG[sig.signal_type as keyof typeof TYPE_CFG];
+                  const pos = positions.find((p) => p.ticker === sig.ticker);
+                  const curPrice = quotes[sig.ticker]?.price ?? sig.current_price;
+                  const pnlPct = pos ? ((curPrice - pos.buy_price) / pos.buy_price * 100) : null;
+                  const isExpanded = expandedSignal === sig.id;
 
-            {/* HOLD signals */}
-            {holdSigs.map((sig) => {
-              const pos = positions.find((p) => p.ticker === sig.ticker);
-              const curPrice = quotes[sig.ticker]?.price ?? sig.current_price;
-              const pnlPct = pos ? ((curPrice - pos.buy_price) / pos.buy_price * 100) : null;
-              return (
-                <div key={sig.id} className="bg-amber-950/20 border border-amber-800/40 rounded-xl p-4">
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-950 text-amber-400">Halten</span>
-                      <span className="font-semibold">{sig.ticker}</span>
-                      {pnlPct !== null && (
-                        <span className={`text-xs ${pnlPct >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                          {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
-                        </span>
-                      )}
+                  return (
+                    <div key={sig.id} className={`${cfg.bg} border ${cfg.border} rounded-2xl overflow-hidden`}>
+                      {/* Card header — tap to expand */}
+                      <button
+                        className="w-full text-left px-4 pt-4 pb-3"
+                        onClick={() => setExpandedSignal(isExpanded ? null : sig.id)}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${cfg.badge}`}>
+                              {cfg.label}
+                            </span>
+                            <span className="font-semibold text-sm">{sig.ticker}</span>
+                            {pnlPct !== null && (
+                              <span className={`text-xs font-medium ${pnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2.5">
+                            {sig.signal_type === 'buy' && sig.target_price > 0 && (
+                              <span className="text-[11px] text-emerald-500 font-medium">{sig.target_price}€</span>
+                            )}
+                            <span className="text-[11px] text-gray-600">{Math.round(sig.confidence * 100)}%</span>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`text-gray-600 transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
+                              <polyline points="6 9 12 15 18 9"/>
+                            </svg>
+                          </div>
+                        </div>
+                        <p className={`text-xs text-gray-400 mt-2 ${isExpanded ? '' : 'line-clamp-2'}`}>
+                          {sig.reasoning}
+                        </p>
+                      </button>
+
+                      {/* Action buttons */}
+                      <div className="px-4 pb-4 flex gap-2">
+                        {sig.signal_type === 'buy' && (
+                          <>
+                            <button
+                              onClick={() => { setAcceptingBuy(sig); setInvestAmount(String(sig.target_price > 0 ? sig.target_price : 100)); }}
+                              className={`flex-1 text-sm font-semibold py-2.5 rounded-xl transition-colors ${cfg.btn}`}
+                            >
+                              Kaufen
+                            </button>
+                            <button
+                              onClick={() => handleDecline(sig.id)}
+                              className="flex-1 text-sm font-medium py-2.5 rounded-xl bg-black/30 hover:bg-black/50 text-gray-400 transition-colors"
+                            >
+                              Ignorieren
+                            </button>
+                          </>
+                        )}
+                        {sig.signal_type === 'sell' && (
+                          <>
+                            <button
+                              onClick={() => handleAccept(sig)}
+                              disabled={actionLoading === sig.id}
+                              className={`flex-1 text-sm font-semibold py-2.5 rounded-xl transition-colors disabled:opacity-50 ${cfg.btn}`}
+                            >
+                              {actionLoading === sig.id ? '…' : pnlPct !== null ? `Verkaufen (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)` : 'Verkaufen'}
+                            </button>
+                            <button
+                              onClick={() => handleDecline(sig.id)}
+                              className="flex-1 text-sm font-medium py-2.5 rounded-xl bg-black/30 hover:bg-black/50 text-gray-400 transition-colors"
+                            >
+                              Behalten
+                            </button>
+                          </>
+                        )}
+                        {sig.signal_type === 'hold' && (
+                          <button
+                            onClick={() => handleAccept(sig)}
+                            disabled={actionLoading === sig.id}
+                            className={`w-full text-sm font-medium py-2.5 rounded-xl transition-colors disabled:opacity-50 ${cfg.btn}`}
+                          >
+                            {actionLoading === sig.id ? '…' : 'Bestätigt – ich halte weiter'}
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <span className="text-xs text-gray-500">{Math.round(sig.confidence * 100)}%</span>
-                  </div>
-                  <p className="text-xs text-gray-400 mb-3 line-clamp-2">{sig.reasoning}</p>
-                  <button
-                    onClick={() => handleAccept(sig)}
-                    disabled={actionLoading === sig.id}
-                    className="w-full bg-gray-800 hover:bg-gray-750 border border-amber-800/30 text-amber-400 text-xs font-medium py-2 rounded-lg transition-colors disabled:opacity-50"
-                  >
-                    {actionLoading === sig.id ? '...' : 'Bestätigt — ich halte weiter'}
-                  </button>
-                </div>
-              );
-            })}
+                  );
+                })}
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Empfehlungs-Verlauf */}
-      <div className="mb-6">
-        <h2 className="text-sm font-medium text-gray-400 mb-3">
-          Verlauf
-          <span className="ml-2 text-xs text-gray-600 font-normal">({signals.filter(s => s.status !== 'pending').length})</span>
-        </h2>
-        {signals.filter(s => s.status !== 'pending').length === 0 ? (
-          <p className="text-sm text-gray-600">Noch keine Empfehlungen. Der Berater analysiert 3× täglich.</p>
-        ) : (
-          <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
-            {signals.filter(s => s.status !== 'pending').map((s) => (
-              <SignalCard key={s.id} signal={s} onDelete={handleDeleteSignal} />
-            ))}
+        {/* ── Tab: Verlauf ─────────────────────────────────────────────────── */}
+        {tab === 'history' && (
+          <div>
+            {historySignals.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <p className="text-sm text-gray-500">Noch kein Verlauf</p>
+                <p className="text-xs text-gray-700 mt-1">Empfehlungen erscheinen hier nach Bearbeitung</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {historySignals.map((s) => {
+                  const cfg = TYPE_CFG[s.signal_type as keyof typeof TYPE_CFG];
+                  const isExpanded = expandedSignal === s.id;
+                  return (
+                    <div key={s.id} className={`${cfg.bg} border ${cfg.border} rounded-2xl`}>
+                      <div className="flex items-start px-4 pt-3 pb-3 gap-3">
+                        {/* Main content - tappable */}
+                        <button
+                          className="flex-1 text-left min-w-0"
+                          onClick={() => setExpandedSignal(isExpanded ? null : s.id)}
+                        >
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${cfg.badge} shrink-0`}>
+                              {cfg.label}
+                            </span>
+                            <span className="font-semibold text-sm">{s.ticker}</span>
+                            <span className="text-[11px] text-gray-600 ml-auto shrink-0">{timeAgo(s.created_at)}</span>
+                          </div>
+                          <p className={`text-xs text-gray-500 leading-relaxed ${isExpanded ? '' : 'line-clamp-2'}`}>
+                            {s.reasoning}
+                          </p>
+                          {s.status && s.status !== 'pending' && (
+                            <p className="text-[10px] text-gray-700 mt-1.5">
+                              {s.status === 'accepted' ? 'Angenommen' : s.status === 'declined' ? 'Ignoriert' : s.status}
+                              {s.current_price > 0 && ` · ${s.current_price.toFixed(2)}€`}
+                            </p>
+                          )}
+                        </button>
+
+                        {/* Delete button — large tap target */}
+                        <button
+                          onClick={() => handleDeleteSignal(s.id)}
+                          className="shrink-0 w-8 h-8 -mr-1 flex items-center justify-center rounded-full text-gray-700 hover:text-red-400 hover:bg-red-950/30 transition-colors"
+                          title="Löschen"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Tab: Portfolio ───────────────────────────────────────────────── */}
+        {tab === 'portfolio' && (
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs text-gray-600">{positions.length} Position{positions.length !== 1 ? 'en' : ''}</p>
+              <a href="/portfolio" className="text-xs text-blue-400 hover:text-blue-300 font-medium">Bearbeiten →</a>
+            </div>
+            {positions.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <p className="text-sm text-gray-500">Noch keine Positionen</p>
+                <a href="/portfolio" className="text-xs text-blue-400 mt-2">Portfolio aufbauen →</a>
+              </div>
+            ) : (
+              <PortfolioTable positions={positions} quotes={quotes} onSelect={(p) => setSelectedPosition(p)} />
+            )}
           </div>
         )}
       </div>
 
-      {/* Portfolio */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-medium text-gray-400">Mein Portfolio</h2>
-          <a href="/portfolio" className="text-xs text-blue-400 hover:text-blue-300">Bearbeiten →</a>
+      {/* ── Fixed Bottom Navigation ────────────────────────────────────────── */}
+      <nav className="fixed bottom-0 left-0 right-0 z-30 bg-gray-950/95 backdrop-blur-sm border-t border-gray-900">
+        <div className="max-w-lg mx-auto flex">
+          {([
+            { id: 'today',     label: 'Heute',     badge: pendingSignals.length,
+              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            },
+            { id: 'history',   label: 'Verlauf',   badge: 0,
+              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            },
+            { id: 'portfolio', label: 'Portfolio', badge: 0,
+              icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            },
+          ] as const).map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setTab(item.id as Tab)}
+              className={`flex-1 flex flex-col items-center gap-1 py-3 transition-colors relative ${
+                tab === item.id ? 'text-white' : 'text-gray-600'
+              }`}
+            >
+              <div className="relative">
+                {item.icon}
+                {item.badge > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 flex items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold px-0.5">
+                    {item.badge}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] font-medium">{item.label}</span>
+              {tab === item.id && (
+                <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-6 h-0.5 bg-white rounded-full" />
+              )}
+            </button>
+          ))}
         </div>
-        {positions.length === 0 ? (
-          <p className="text-sm text-gray-600">Noch keine Positionen. <a href="/portfolio" className="text-blue-400">Portfolio aufbauen →</a></p>
-        ) : (
-          <PortfolioTable positions={positions} quotes={quotes} onSelect={(p) => setSelectedPosition(p)} />
-        )}
-      </div>
+        <div className="h-safe-bottom" />
+      </nav>
 
+      {/* ── Profit Calculator ─────────────────────────────────────────────── */}
       {selectedPosition && (
         <ProfitCalculator
           position={selectedPosition}
@@ -483,71 +577,83 @@ function DashboardContent() {
         />
       )}
 
-      {/* BUY modal */}
+      {/* ── BUY Modal ─────────────────────────────────────────────────────── */}
       {acceptingBuy && (
-        <div className="fixed inset-0 bg-black/80 flex items-end justify-center z-40 p-4">
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-sm p-5">
-            <div className="flex items-center justify-between mb-1">
-              <div>
-                <h3 className="font-semibold text-lg">{acceptingBuy.ticker} kaufen</h3>
-                <p className="text-xs text-gray-500">Aktueller Kurs: {acceptingBuy.current_price?.toFixed(2)}€</p>
-              </div>
-              <button
-                onClick={() => setAcceptingBuy(null)}
-                className="text-gray-500 hover:text-gray-300 text-2xl leading-none"
-              >
-                ×
-              </button>
+        <div className="fixed inset-0 bg-black/85 flex items-end justify-center z-50 p-4">
+          <div className="bg-gray-950 border border-gray-800 rounded-3xl w-full max-w-sm pb-safe">
+            {/* Drag handle */}
+            <div className="flex justify-center pt-3 pb-2">
+              <div className="w-10 h-1 rounded-full bg-gray-700" />
             </div>
 
-            <p className="text-xs text-gray-400 my-3 line-clamp-4">{acceptingBuy.reasoning}</p>
-
-            <div className="mb-4">
-              <label className="text-xs text-gray-500 mb-1 block">Investitionsbetrag (€)</label>
-              <div className="flex gap-2 mb-2">
-                {[50, 100, 150, 200].map((amt) => (
-                  <button
-                    key={amt}
-                    onClick={() => setInvestAmount(String(amt))}
-                    className={`flex-1 text-xs py-1.5 rounded-lg border transition-colors ${
-                      investAmount === String(amt)
-                        ? 'border-emerald-600 text-emerald-400 bg-emerald-950/40'
-                        : 'border-gray-700 text-gray-500 hover:border-gray-500'
-                    }`}
-                  >
-                    {amt}€
-                  </button>
-                ))}
+            <div className="px-5 pb-5">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="font-bold text-xl">{acceptingBuy.ticker} kaufen</h3>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    Kurs: {acceptingBuy.current_price?.toFixed(2)}€
+                    {acceptingBuy.target_price > 0 && (
+                      <span className="text-emerald-500 ml-2">· {acceptingBuy.target_price}€ empfohlen</span>
+                    )}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setAcceptingBuy(null)}
+                  className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-800 text-gray-400"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
               </div>
-              <input
-                type="number"
-                min="1"
-                step="10"
-                value={investAmount}
-                onChange={(e) => setInvestAmount(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm focus:border-emerald-500 focus:outline-none"
-              />
-              {acceptingBuy.current_price && parseFloat(investAmount) > 0 && (
-                <p className="text-xs text-gray-500 mt-1">
-                  = {(parseFloat(investAmount) / acceptingBuy.current_price).toFixed(4)} Anteile
-                </p>
-              )}
-            </div>
 
-            <div className="flex gap-2">
-              <button
-                onClick={handleBuy}
-                disabled={actionLoading === acceptingBuy.id || !investAmount || parseFloat(investAmount) <= 0}
-                className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white font-medium py-3 rounded-xl transition-colors"
-              >
-                {actionLoading === acceptingBuy.id ? 'Wird gekauft...' : 'Jetzt kaufen'}
-              </button>
-              <button
-                onClick={() => { handleDecline(acceptingBuy.id); setAcceptingBuy(null); }}
-                className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium py-3 rounded-xl transition-colors"
-              >
-                Ignorieren
-              </button>
+              <p className="text-xs text-gray-500 leading-relaxed mb-5 line-clamp-3">{acceptingBuy.reasoning}</p>
+
+              <div className="mb-5">
+                <label className="text-xs text-gray-600 mb-2 block">Investitionsbetrag</label>
+                <div className="grid grid-cols-4 gap-2 mb-3">
+                  {[50, 100, 150, 200].map((amt) => (
+                    <button
+                      key={amt}
+                      onClick={() => setInvestAmount(String(amt))}
+                      className={`py-2 text-sm rounded-xl border font-medium transition-colors ${
+                        investAmount === String(amt)
+                          ? 'border-emerald-600 text-emerald-400 bg-emerald-950/50'
+                          : 'border-gray-800 text-gray-500 bg-gray-900 hover:border-gray-700'
+                      }`}
+                    >
+                      {amt}€
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="number" min="1" step="10" value={investAmount}
+                  onChange={(e) => setInvestAmount(e.target.value)}
+                  className="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 text-sm focus:border-gray-600 focus:outline-none"
+                  placeholder="Eigener Betrag (€)"
+                />
+                {acceptingBuy.current_price > 0 && parseFloat(investAmount) > 0 && (
+                  <p className="text-xs text-gray-600 mt-2">
+                    = {(parseFloat(investAmount) / acceptingBuy.current_price).toFixed(4)} Anteile
+                  </p>
+                )}
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={handleBuy}
+                  disabled={actionLoading === acceptingBuy.id || !investAmount || parseFloat(investAmount) <= 0}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-semibold py-3.5 rounded-2xl transition-colors text-sm"
+                >
+                  {actionLoading === acceptingBuy.id ? 'Wird gekauft…' : `${parseFloat(investAmount) || 0}€ investieren`}
+                </button>
+                <button
+                  onClick={() => { handleDecline(acceptingBuy.id); setAcceptingBuy(null); }}
+                  className="px-5 bg-gray-900 hover:bg-gray-800 text-gray-400 font-medium py-3.5 rounded-2xl transition-colors text-sm"
+                >
+                  Nein
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -559,8 +665,8 @@ function DashboardContent() {
 export default function DashboardPage() {
   return (
     <Suspense fallback={
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-pulse text-gray-400">Lade Berater...</div>
+      <div className="flex items-center justify-center min-h-screen bg-black">
+        <div className="text-gray-600 text-sm animate-pulse">Wird geladen…</div>
       </div>
     }>
       <DashboardContent />
