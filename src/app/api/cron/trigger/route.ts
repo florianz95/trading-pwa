@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  // Verify the user is authenticated via their access token
+  // Verify the user is authenticated
   const authHeader = req.headers.get('authorization');
   const token = authHeader?.replace('Bearer ', '');
   if (!token) {
@@ -20,10 +20,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Call the cron analyze endpoint server-side with the secret
-  const secret = process.env.CRON_SECRET;
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
-  const res = await fetch(`${baseUrl}/api/cron/analyze?secret=${secret}`, {
+  // Derive base URL from the incoming request (works on Vercel + localhost)
+  const proto = req.headers.get('x-forwarded-proto') ?? 'http';
+  const host = req.headers.get('host') ?? 'localhost:3000';
+  const baseUrl = `${proto}://${host}`;
+  const secret = process.env.CRON_SECRET ?? '';
+
+  const res = await fetch(`${baseUrl}/api/cron/analyze?secret=${encodeURIComponent(secret)}`, {
     headers: { 'Content-Type': 'application/json' },
   });
 
