@@ -4,6 +4,7 @@ import { getQuote, getHistorical } from '@/lib/yahoo';
 import { analyzeMarket } from '@/lib/openrouter';
 import { fetchAllNews } from '@/lib/rss';
 import { sendPushNotification } from '@/lib/push';
+import { WATCHLIST_TICKERS, STOCKS } from '@/lib/stocks';
 
 export const maxDuration = 60;
 
@@ -30,12 +31,12 @@ export async function GET(req: NextRequest) {
         .select('*')
         .eq('user_id', user.user_id);
 
-      if (!positions?.length) {
-        debugLog.push({ user_id: user.user_id, skipped: 'no positions' });
-        continue;
-      }
+      const positionTickers = positions?.length
+        ? [...new Set(positions.map((p: any) => p.ticker))]
+        : [];
 
-      const tickers = [...new Set(positions.map((p) => p.ticker))];
+      // Merge portfolio tickers + watchlist (deduplicated)
+      const tickers = [...new Set([...positionTickers, ...WATCHLIST_TICKERS])];
 
       // 1. Live-Kurse + History
       const quotes = await Promise.all(tickers.map(getQuote));
@@ -66,7 +67,7 @@ export async function GET(req: NextRequest) {
       }
 
       // 5. KI-Analyse via OpenRouter
-      const portfolio = positions.map((p) => ({
+      const portfolio = (positions ?? []).map((p: any) => ({
         ticker: p.ticker,
         buyPrice: p.buy_price,
         quantity: p.quantity,

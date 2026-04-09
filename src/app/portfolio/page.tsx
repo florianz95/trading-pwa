@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
+import { searchStocks, type Stock } from '@/lib/stocks';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -34,6 +35,9 @@ export default function PortfolioPage() {
   const [form, setForm] = useState<Position>(emptyPosition);
   const [editing, setEditing] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [tickerQuery, setTickerQuery] = useState('');
+  const [suggestions, setSuggestions] = useState<Stock[]>([]);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -44,6 +48,26 @@ export default function PortfolioPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (tickerQuery.length < 1) { setSuggestions([]); return; }
+    setSuggestions(searchStocks(tickerQuery));
+  }, [tickerQuery]);
+
+  useEffect(() => {
+    if (editing) setTickerQuery(form.ticker);
+  }, [editing]);
+
+  const selectStock = (stock: Stock) => {
+    setForm((f) => ({
+      ...f,
+      ticker: stock.ticker,
+      name: stock.name,
+      asset_type: stock.category === 'etf' ? 'etf' : stock.category === 'crypto' ? 'crypto' : 'stock',
+    }));
+    setTickerQuery(stock.ticker);
+    setSuggestions([]);
+  };
 
   const save = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -117,10 +141,41 @@ export default function PortfolioPage() {
       <div className="bg-gray-900 rounded-xl p-4 mb-6">
         <h2 className="text-sm font-medium mb-3">{editing ? 'Position bearbeiten' : 'Neue Position'}</h2>
         <div className="grid grid-cols-2 gap-3">
-          {field('Ticker (z.B. AAPL)', 'ticker')}
-          {field('Name', 'name')}
+          {/* Ticker Autocomplete */}
+          <div className="col-span-2 relative" ref={suggestionsRef}>
+            <label className="text-[11px] text-gray-500 uppercase tracking-wider block mb-1">Aktie / ETF suchen</label>
+            <input
+              type="text"
+              placeholder="z.B. Apple, AAPL, SAP..."
+              value={tickerQuery}
+              onChange={(e) => {
+                setTickerQuery(e.target.value);
+                setForm((f) => ({ ...f, ticker: e.target.value.toUpperCase(), name: '' }));
+              }}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+            />
+            {suggestions.length > 0 && (
+              <div className="absolute z-10 left-0 right-0 mt-1 bg-gray-800 border border-gray-700 rounded-lg overflow-hidden shadow-xl">
+                {suggestions.map((s) => (
+                  <button
+                    key={s.ticker}
+                    type="button"
+                    onClick={() => selectStock(s)}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-700 flex items-center justify-between"
+                  >
+                    <span className="text-sm font-medium">{s.ticker}</span>
+                    <span className="text-xs text-gray-400 ml-2 truncate">{s.name}</span>
+                    <span className="text-[10px] text-gray-600 ml-2 shrink-0">{s.category.toUpperCase()}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {form.name && (
+              <p className="text-xs text-gray-500 mt-1">{form.name}</p>
+            )}
+          </div>
           {field('Kaufkurs (€)', 'buy_price', 'number')}
-          {field('Menge', 'quantity', 'number')}
+          {field('Anzahl Anteile', 'quantity', 'number')}
           {field('Kaufdatum', 'buy_date', 'date')}
           {field('Ordergebühr (€)', 'order_fee', 'number')}
         </div>
