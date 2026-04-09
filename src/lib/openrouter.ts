@@ -96,11 +96,18 @@ export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
  
   const text = response.choices[0]?.message?.content?.trim() ?? '';
 
+  const clean = text.replace(/```json\s?/g, '').replace(/```/g, '').trim();
   try {
-    const clean = text.replace(/```json\s?/g, '').replace(/```/g, '').trim();
     return JSON.parse(clean) as Signal[];
   } catch {
-    return [{ ticker: '__debug__', action: 'hold', confidence: 0, reasoning: `PARSE_FAILED: ${text.slice(0, 400)}` }] as any;
+    // Try to recover truncated JSON by closing at the last complete object
+    const lastBrace = clean.lastIndexOf('}');
+    if (lastBrace > 0) {
+      try {
+        return JSON.parse(clean.slice(0, lastBrace + 1) + ']') as Signal[];
+      } catch {}
+    }
+    return [];
   }
 }
  

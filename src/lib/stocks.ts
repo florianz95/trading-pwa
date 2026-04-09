@@ -109,10 +109,9 @@ export const STOCKS: Stock[] = [
 
 // Watchlist für den Cron-Bot (Top-Picks für Kaufgelegenheiten)
 export const WATCHLIST_TICKERS = [
-  'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AMD',
-  'SAP.DE', 'SIE.DE', 'RHM.DE', 'ALV.DE', 'IFX.DE',
-  'PLTR', 'CRWD', 'NET', 'DDOG', 'SNOW',
-  'BTC-USD', 'ETH-USD',
+  'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META',
+  'SAP.DE', 'RHM.DE',
+  'PLTR', 'BTC-USD', 'ETH-USD',
 ];
 
 export function searchStocks(query: string): Stock[] {
