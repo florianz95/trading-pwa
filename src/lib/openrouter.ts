@@ -263,4 +263,46 @@ export async function analyzeMarket(input: AnalysisInput): Promise<Signal[]> {
   }
 }
 
+// ── Pass 1: Ticker-Extraktion aus News ────────────────────────────────────────
+// Schneller, billiger Call: KI liest Headlines und nennt interessante Tickers
+// die NICHT bereits in der Watchlist sind.
+export async function extractNewsTickets(
+  headlines: string[],
+  knownTickers: string[]
+): Promise<string[]> {
+  if (headlines.length === 0) return [];
+  const known = new Set(knownTickers.map((t) => t.toUpperCase()));
+
+  const prompt = `News-Headlines:\n${headlines.slice(0, 30).map((h, i) => `${i + 1}. ${h}`).join('\n')}
+
+Bereits beobachtete Tickers (NICHT zurückgeben): ${[...known].join(', ')}
+
+Aufgabe: Welche Aktien/ETFs/Rohstoffe/Krypto könnten von diesen News profitieren oder leiden, die NICHT in der obigen Liste sind?
+Sektoren: KI & Tech, Rüstung & Verteidigung, Rohstoffe (Gold, Silber, Kupfer, Öl), Energie, Pharma & Biotech, Emerging Markets, alles andere Relevante.
+Gib NUR Yahoo-Finance-Ticker zurück. Max 8. Nur wenn wirklich relevant.
+Format: JSON-Array, z.B. ["LMT","GLD","FCX","RKLB"] oder []`;
+
+  try {
+    const response = await client.chat.completions.create({
+      model: process.env.LLM_MODEL ?? 'anthropic/claude-haiku-4-5',
+      messages: [
+        { role: 'system', content: 'Du bist ein Finanz-Ticker-Extraktor. Antworte NUR mit einem JSON-Array von Ticker-Symbolen oder [].' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.1,
+      max_tokens: 100,
+    });
+    const content = response.choices[0]?.message?.content ?? '[]';
+    const match = content.match(/\[[\s\S]*?\]/);
+    if (!match) return [];
+    const raw: string[] = JSON.parse(match[0]);
+    return raw
+      .map((t) => String(t).toUpperCase().trim())
+      .filter((t) => t.length > 0 && t.length <= 12 && !known.has(t))
+      .slice(0, 8);
+  } catch {
+    return [];
+  }
+}
+
 export { SYSTEM_PROMPT, buildPrompt };

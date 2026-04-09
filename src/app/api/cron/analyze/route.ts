@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { getQuote, getHistorical } from '@/lib/yahoo';
-import { analyzeMarket } from '@/lib/openrouter';
+import { analyzeMarket, extractNewsTickets } from '@/lib/openrouter';
 import { fetchAllNews } from '@/lib/rss';
 import { sendPushNotification } from '@/lib/push';
 import { WATCHLIST_TICKERS } from '@/lib/stocks';
@@ -70,22 +70,41 @@ export async function GET(req: NextRequest) {
         ? [...new Set(positions.map((p: any) => p.ticker))]
         : [];
 
-      // ── Vorfilter: Quotes für alle Watchlist-Tickers holen ───────────────
-      const allWatchlistTickers = [...new Set([...WATCHLIST_TICKERS, ...positionTickers])];
-      const allQuotes = await Promise.all(allWatchlistTickers.map(getQuote));
+      // ── Pass 1: Allgemeine News holen für Ticker-Extraktion ──────────────
+      const generalNews = await fetchAllNews([]);  // generelle Feeds ohne Ticker-Filter
+      const knownTickers = [...new Set([...WATCHLIST_TICKERS, ...positionTickers])];
+
+      // ── Pass 1 KI-Call: Neue Tickers aus News extrahieren ────────────────
+      const newsHeadlines = generalNews.map((n) => `[${n.source}] ${n.title}`);
+      const dynamicTickers = await extractNewsTickets(newsHeadlines, knownTickers);
+
+      // ── Quotes für Watchlist + dynamische Tickers holen ──────────────────
+      const allWatchlistTickers = [...new Set([...knownTickers, ...dynamicTickers])];
+      const allQuotesRaw = await Promise.allSettled(allWatchlistTickers.map(getQuote));
+      const allQuotes = allQuotesRaw
+        .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled' && r.value?.price > 0)
+        .map((r) => r.value);
 
       // Top-12 Mover aus Watchlist (exkl. Portfolio-Tickers)
       const positionTickerSet = new Set(positionTickers);
       const watchlistQuotes = allQuotes.filter((q) => !positionTickerSet.has(q.ticker));
       watchlistQuotes.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
-      const topWatchlist = watchlistQuotes.slice(0, 12).map((q) => q.ticker);
-      const tickers = [...new Set([...positionTickers, ...topWatchlist])];
+      // Top 10 aus Watchlist + alle dynamisch gefundenen (max 5)
+      const topWatchlist = watchlistQuotes
+        .filter((q) => !dynamicTickers.includes(q.ticker))
+        .slice(0, 10)
+        .map((q) => q.ticker);
+      const validDynamic = watchlistQuotes
+        .filter((q) => dynamicTickers.includes(q.ticker))
+        .slice(0, 5)
+        .map((q) => q.ticker);
+      const tickers = [...new Set([...positionTickers, ...topWatchlist, ...validDynamic])];
 
       const quotes = allQuotes.filter((q) => tickers.includes(q.ticker));
       const histories = await Promise.all(
         tickers.map(async (t) => ({
           ticker: t,
-          prices: (await getHistorical(t, 30)).map((h) => h.close ?? 0),
+          prices: (await getHistorical(t, 30)).map((h: any) => h.close ?? 0),
           changePct: quotes.find((q) => q.ticker === t)?.change ?? 0,
         }))
       );
@@ -97,7 +116,7 @@ export async function GET(req: NextRequest) {
         });
       }
 
-      // News
+      // News für alle Tickers (inkl. dynamische) holen
       const news = await fetchAllNews(tickers);
       for (const n of news.slice(0, 30)) {
         try {
@@ -246,6 +265,7 @@ export async function GET(req: NextRequest) {
         positions: (positions ?? []).length,
         tickers,
         forcedSignals: forcedSignals.map((s) => s.ticker + ':' + s.reason.split(':')[0]),
+        dynamicTickers,
         filteredOut: { cooldown: [...cooldownTickers] },
         signals: savedSignals.map((s) => ({ ticker: s.ticker, action: s.action, confidence: s.confidence })),
         hasPushSub: !!user.push_subscription,
