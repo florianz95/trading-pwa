@@ -79,6 +79,16 @@ function DashboardContent() {
 
   useEffect(() => { if (user) loadData(); }, [user, loadData]);
 
+  // Check if push is already active in browser
+  useEffect(() => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    navigator.serviceWorker.ready.then((reg) => {
+      reg.pushManager.getSubscription().then((sub) => {
+        if (sub) setPushEnabled(true);
+      });
+    });
+  }, []);
+
   // Handle notification click params (?signal=ID&action=accept/decline)
   useEffect(() => {
     if (!user || loading) return;
@@ -152,10 +162,13 @@ function DashboardContent() {
     }
     try {
       const reg = await navigator.serviceWorker.ready;
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
-      });
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
+        });
+      }
       await fetch('/api/push/subscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
