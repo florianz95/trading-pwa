@@ -17,7 +17,8 @@
 
 import 'dotenv/config';
 import OpenAI from 'openai';
-import yahooFinance from 'yahoo-finance2';
+import YahooFinance from 'yahoo-finance2'
+const yahooFinance = new YahooFinance();
 
 // ─── Config ──────────────────────────────────────────────────────────
 
@@ -71,13 +72,13 @@ async function getHistoricalPrices(ticker, days) {
   const start = new Date();
   start.setDate(end.getDate() - days);
 
-  const result = await yahooFinance.chart(ticker, {
+  const result = await yahooFinance.historical(ticker, {
     period1: start,
     period2: end,
     interval: '1d',
   });
 
-  return result.quotes.map((q) => ({
+  return result.map((q) => ({
     date: q.date.toISOString().split('T')[0],
     open: q.open,
     close: q.close,
