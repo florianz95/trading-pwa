@@ -22,13 +22,18 @@ export async function GET(req: NextRequest) {
 
     if (!users?.length) return NextResponse.json({ status: 'no users' });
 
+    const debugLog: any[] = [];
+
     for (const user of users) {
       const { data: positions } = await supabaseAdmin
         .from('positions')
         .select('*')
         .eq('user_id', user.user_id);
 
-      if (!positions?.length) continue;
+      if (!positions?.length) {
+        debugLog.push({ user_id: user.user_id, skipped: 'no positions' });
+        continue;
+      }
 
       const tickers = [...new Set(positions.map((p) => p.ticker))];
 
@@ -88,10 +93,11 @@ export async function GET(req: NextRequest) {
       }
 
       // 7. Push für jeden BUY mit hoher Konfidenz (Accept/Decline)
+      const pushResults: any[] = [];
       if (user.push_subscription) {
         const buySignals = savedSignals.filter((s) => s.action === 'buy' && s.confidence > 0.6);
         for (const sig of buySignals.slice(0, 3)) {
-          await sendPushNotification(user.push_subscription, {
+          const ok = await sendPushNotification(user.push_subscription, {
             title: `KAUFEN: ${sig.ticker}`,
             body: sig.reasoning.slice(0, 120),
             ticker: sig.ticker,
@@ -99,11 +105,12 @@ export async function GET(req: NextRequest) {
             signal_id: sig.id,
             url: '/dashboard',
           });
+          pushResults.push({ ticker: sig.ticker, type: 'buy', sent: ok });
         }
         // SELL signals without accept/decline (just info)
         const sellSignals = savedSignals.filter((s) => s.action === 'sell' && s.confidence > 0.65);
         for (const sig of sellSignals.slice(0, 2)) {
-          await sendPushNotification(user.push_subscription, {
+          const ok = await sendPushNotification(user.push_subscription, {
             title: `VERKAUFEN: ${sig.ticker}`,
             body: sig.reasoning.slice(0, 120),
             ticker: sig.ticker,
@@ -111,11 +118,21 @@ export async function GET(req: NextRequest) {
             signal_id: sig.id,
             url: '/dashboard',
           });
+          pushResults.push({ ticker: sig.ticker, type: 'sell', sent: ok });
         }
       }
+
+      debugLog.push({
+        user_id: user.user_id,
+        positions: positions.length,
+        tickers,
+        signals: savedSignals.map((s) => ({ ticker: s.ticker, action: s.action, confidence: s.confidence })),
+        hasPushSub: !!user.push_subscription,
+        push: pushResults,
+      });
     }
 
-    return NextResponse.json({ status: 'ok', timestamp: new Date().toISOString() });
+    return NextResponse.json({ status: 'ok', timestamp: new Date().toISOString(), debug: debugLog });
   } catch (error) {
     console.error('Cron error:', error);
     return NextResponse.json({ error: String(error) }, { status: 500 });
