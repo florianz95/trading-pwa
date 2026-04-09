@@ -194,27 +194,17 @@ function DashboardContent() {
   const triggerAnalysis = async () => {
     if (analyzing) return;
     setAnalyzing(true);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/cron/trigger', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token}`,
-        },
-      });
-      const data = await res.json();
-      if (res.ok) {
-        const count = data.debug?.[0]?.signals?.length ?? 0;
-        showToast(count > 0 ? `${count} neue Empfehlung${count !== 1 ? 'en' : ''} gefunden` : 'Analyse abgeschlossen — keine neuen Signale');
-        loadData();
-      } else {
-        showToast('Analyse fehlgeschlagen');
-      }
-    } catch {
-      showToast('Verbindungsfehler');
-    }
-    setAnalyzing(false);
+    const { data: { session } } = await supabase.auth.getSession();
+    // Fire-and-forget — don't await (analysis takes 30-60s, would timeout)
+    fetch('/api/cron/analyze', {
+      headers: { 'Authorization': `Bearer ${session?.access_token}` },
+    }).catch(() => {});
+    showToast('Analyse läuft… Ergebnisse in ~40 Sek.');
+    // Reload data after 40s when analysis should be done
+    setTimeout(() => {
+      loadData();
+      setAnalyzing(false);
+    }, 40000);
   };
 
   const enablePush = async () => {
